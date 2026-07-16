@@ -1,0 +1,13 @@
+[target.thumbv7em-none-eabihf]
+rustflags = [
+  # Use the linker script link.x provided by cortex-m-rt
+  "-C", "link-arg=-Tlink.x",
+  # Use the linker script defmt.x provided by defmt
+  "-C", "link-arg=-Tdefmt.x",
+]
+
+[build]
+target = "thumbv7em-none-eabihf"
+
+[env]
+EMBASSY_EXECUTOR_TASK_ARENA_SIZE = "32768"
