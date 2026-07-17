@@ -23,7 +23,7 @@
       -webkit-backdrop-filter: blur(20px);
       border: 1px solid rgba(99, 102, 241, 0.2);
       border-radius: 28px;
-      padding: 48px 32px;
+      padding: 40px 24px;
       text-align: center;
       max-width: 440px;
       width: 100%;
@@ -40,15 +40,15 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       margin: 16px 0 8px 0;
-      font-size: 2.4rem;
+      font-size: 2.2rem;
       font-weight: 800;
       letter-spacing: -0.025em;
     }
     p {
       color: #94a3b8;
-      font-size: 1.05rem;
+      font-size: 1rem;
       line-height: 1.6;
-      margin: 16px 0 32px 0;
+      margin: 16px 0 28px 0;
     }
     .status-badge {
       display: inline-flex;
@@ -90,6 +90,83 @@
     }
     .spec-label { color: #64748b; }
     .spec-value { color: #818cf8; font-weight: bold; }
+
+    /* OTA Container & Elements */
+    .ota-container {
+      margin-top: 28px;
+      padding-top: 24px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .ota-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #94a3b8;
+      text-align: left;
+      margin-bottom: 2px;
+    }
+    .file-label {
+      background: rgba(99, 102, 241, 0.06);
+      border: 1px dashed rgba(99, 102, 241, 0.3);
+      color: #818cf8;
+      padding: 14px;
+      border-radius: 14px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: all 0.3s;
+    }
+    .file-label:hover {
+      background: rgba(99, 102, 241, 0.12);
+      border-color: rgba(99, 102, 241, 0.5);
+    }
+    .file-name {
+      font-size: 0.8rem;
+      color: #64748b;
+      margin-bottom: 4px;
+    }
+    .upload-btn {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: none;
+      color: white;
+      padding: 14px;
+      border-radius: 14px;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .upload-btn:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px -10px rgba(139, 92, 246, 0.5);
+    }
+    .upload-btn:disabled {
+      background: #1e293b;
+      color: #475569;
+      cursor: not-allowed;
+    }
+    .progress-bar-bg {
+      background: #0f172a;
+      height: 8px;
+      border-radius: 9999px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+    .progress-bar-fill {
+      background: #10b981;
+      width: 0%;
+      height: 100%;
+      transition: width 0.1s;
+      border-radius: 9999px;
+    }
+    .ota-status {
+      font-size: 0.85rem;
+      color: #cbd5e1;
+      font-weight: 600;
+      margin-top: 2px;
+    }
     @keyframes pulse {
       0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
       70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
@@ -104,11 +181,97 @@
     </div>
     <h1>nice!nano v2</h1>
     <p>This web page is served dynamically over a USB-Ethernet connection with automatic DHCP setup.</p>
+
     <div class="spec-container">
       <div class="spec-item"><span class="spec-label">MCU:</span><span class="spec-value">nRF52840 (Cortex-M4F)</span></div>
-      <div class="spec-item"><span class="spec-label'>Stack:</span><span class="spec-value">Embassy & smoltcp</span></div>
+      <div class="spec-item"><span class="spec-label">Stack:</span><span class="spec-value">Embassy & smoltcp</span></div>
       <div class="spec-item"><span class="spec-label">IP Address:</span><span class="spec-value">192.168.42.1</span></div>
     </div>
+
+    <!-- OTA Firmware Update -->
+    <div class="ota-container">
+      <div class="ota-title">Firmware Update (Web OTA)</div>
+      <label class="file-label" for="file-input">Choose .bin File</label>
+      <input type="file" id="file-input" accept=".bin" style="display: none;">
+      <span class="file-name" id="file-name">No file selected</span>
+      <button class="upload-btn" id="upload-btn" disabled>Flash Firmware</button>
+      <div class="progress-bar-bg" id="progress-bg" style="display: none;">
+        <div class="progress-bar-fill" id="progress-fill"></div>
+      </div>
+      <div class="ota-status" id="ota-status"></div>
+    </div>
   </div>
+
+  <script>
+    const fileInput = document.getElementById('file-input');
+    const fileName = document.getElementById('file-name');
+    const uploadBtn = document.getElementById('upload-btn');
+    const progressBg = document.getElementById('progress-bg');
+    const progressFill = document.getElementById('progress-fill');
+    const otaStatus = document.getElementById('ota-status');
+
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        fileName.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+        uploadBtn.disabled = false;
+        otaStatus.textContent = '';
+      } else {
+        fileName.textContent = 'No file selected';
+        uploadBtn.disabled = true;
+      }
+    });
+
+    uploadBtn.addEventListener('click', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      // Restrict update binary size to 480KB (matches partition limit)
+      if (file.size > 480 * 1024) {
+        otaStatus.textContent = 'Error: File exceeds 480 KB limit!';
+        otaStatus.style.color = '#ef4444';
+        return;
+      }
+
+      uploadBtn.disabled = true;
+      fileInput.disabled = true;
+      progressBg.style.display = 'block';
+      otaStatus.textContent = 'Uploading firmware...';
+      otaStatus.style.color = '#e2e8f0';
+
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/update', true);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = (e.loaded / e.total) * 100;
+          progressFill.style.width = percent + '%';
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status === 200) {
+          otaStatus.textContent = 'Success! Writing to Flash and rebooting in 1s...';
+          otaStatus.style.color = '#34d399';
+          progressFill.style.background = '#34d399';
+        } else {
+          otaStatus.textContent = 'Upload failed! Server returned code ' + xhr.status;
+          otaStatus.style.color = '#ef4444';
+          uploadBtn.disabled = false;
+          fileInput.disabled = false;
+        }
+      };
+
+      xhr.onerror = () => {
+        otaStatus.textContent = 'Network error during upload!';
+        otaStatus.style.color = '#ef4444';
+        uploadBtn.disabled = false;
+        fileInput.disabled = false;
+      };
+
+      // Send raw file binary buffer
+      xhr.send(file);
+    });
+  </script>
 </body>
 </html>

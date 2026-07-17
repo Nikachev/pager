@@ -21,6 +21,7 @@ static_cell = "2.1.1"
 embedded-io-async = "0.7.0"
 heapless = "0.9.3"
 embassy-futures = "0.1.2"
+embedded-storage = "0.3.1"
 
 [profile.release]
 codegen-units = 1
