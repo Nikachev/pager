@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>nice!nano v2 - BLE Controller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #8b5cf6;
+      --primary-hover: #a78bfa;
+      --bg: #090514;
+      --card-bg: rgba(15, 23, 42, 0.45);
+      --border: rgba(139, 92, 246, 0.2);
+      --border-hover: rgba(139, 92, 246, 0.4);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+    }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: radial-gradient(circle at top, #1e1b4b, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      padding: 20px;
+      box-sizing: border-box;
+    }
+
+    .container {
+      background: var(--card-bg);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      padding: 40px 30px;
+      text-align: center;
+      max-width: 500px;
+      width: 100%;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .container:hover {
+      border-color: var(--border-hover);
+      box-shadow: 0 30px 60px -15px rgba(139, 92, 246, 0.25);
+    }
+
+    h1 {
+      background: linear-gradient(to right, #38bdf8, #818cf8, #c084fc);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin: 0 0 8px 0;
+      font-size: 2.4rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.05rem;
+      line-height: 1.6;
+      margin-bottom: 30px;
+    }
+
+    /* Connection status badge */
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.2);
+      color: #f87171;
+      padding: 8px 20px;
+      border-radius: 9999px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      margin-bottom: 30px;
+      transition: all 0.3s;
+    }
+
+    .status-badge.connected {
+      background: rgba(16, 185, 129, 0.1);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      color: #34d399;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background: #ef4444;
+      border-radius: 50%;
+      margin-right: 10px;
+    }
+
+    .status-badge.connected .status-dot {
+      background: #10b981;
+      animation: pulse 2s infinite;
+    }
+
+    /* Action Buttons */
+    .btn {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: none;
+      color: white;
+      padding: 16px 32px;
+      border-radius: 16px;
+      font-weight: 700;
+      font-size: 1.05rem;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.3s;
+      box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+    }
+
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px -10px rgba(139, 92, 246, 0.5);
+    }
+
+    .btn:disabled {
+      background: #1e293b;
+      color: #475569;
+      cursor: not-allowed;
+      box-shadow: none;
+      transform: none;
+    }
+
+    .btn-disconnect {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+      box-shadow: none;
+      margin-top: 12px;
+    }
+
+    .btn-disconnect:hover {
+      background: rgba(239, 68, 68, 0.2);
+      box-shadow: none;
+    }
+
+    /* Control Panel */
+    .control-panel {
+      margin-top: 30px;
+      padding-top: 30px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      display: none;
+      flex-direction: column;
+      gap: 20px;
+      text-align: left;
+    }
+
+    .control-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 18px;
+      padding: 20px;
+    }
+
+    .control-label {
+      font-weight: 600;
+      font-size: 1.1rem;
+    }
+
+    .control-desc {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* Elegant Toggle Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+    }
+
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #334155;
+      transition: .4s;
+      border-radius: 34px;
+    }
+
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .4s;
+      border-radius: 50%;
+    }
+
+    input:checked + .slider {
+      background-color: #10b981;
+    }
+
+    input:checked + .slider:before {
+      transform: translateX(26px);
+    }
+
+    /* Terminal Console Log */
+    .console-container {
+      margin-top: 30px;
+      text-align: left;
+    }
+
+    .console-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .console {
+      background: #0f172a;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 16px;
+      padding: 16px;
+      height: 150px;
+      overflow-y: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.82rem;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
+
+    .log-entry {
+      margin-bottom: 6px;
+    }
+    .log-time { color: #64748b; margin-right: 8px; }
+    .log-info { color: #818cf8; }
+    .log-success { color: #34d399; }
+    .log-warn { color: #fbbf24; }
+
+    /* Value badge */
+    .value-badge {
+      background: rgba(131, 131, 248, 0.1);
+      border: 1px solid rgba(131, 131, 248, 0.2);
+      color: #818cf8;
+      padding: 4px 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      font-weight: bold;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="status-badge" id="status-badge">
+      <span class="status-dot"></span><span id="status-text">Disconnected</span>
+    </div>
+    <h1>nice!nano v2</h1>
+    <p class="subtitle">Wireless BLE Control Panel using Web Bluetooth API.</p>
+
+    <button class="btn" id="connect-btn">Connect via Bluetooth</button>
+    <button class="btn btn-disconnect" id="disconnect-btn" style="display: none;">Disconnect</button>
+
+    <div class="control-panel" id="control-panel">
+      <!-- LED control -->
+      <div class="control-row">
+        <div>
+          <div class="control-label">LED Control</div>
+          <div class="control-desc">Turn the nice!nano red LED ON or OFF.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="led-switch">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Live Notifications -->
+      <div class="control-row">
+        <div>
+          <div class="control-label">Heartbeat Value</div>
+          <div class="control-desc">Live counter notification received from board.</div>
+        </div>
+        <span class="value-badge" id="notify-value">0</span>
+      </div>
+    </div>
+
+    <!-- Console Logging -->
+    <div class="console-container">
+      <div class="console-title">Console Logs</div>
+      <div class="console" id="console-log">
+        <div class="log-entry"><span class="log-time">[00:00:00]</span><span class="log-info">Ready to pair. Click the button above to begin.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SERVICE_UUID = "9e7a0001-0b3e-46e8-ad30-7746bad7128a";
+    const LED_CHAR_UUID = "9e7a0002-0b3e-46e8-ad30-7746bad7128a";
+    const STATUS_CHAR_UUID = "9e7a0003-0b3e-46e8-ad30-7746bad7128a";
+
+    const connectBtn = document.getElementById('connect-btn');
+    const disconnectBtn = document.getElementById('disconnect-btn');
+    const statusBadge = document.getElementById('status-badge');
+    const statusText = document.getElementById('status-text');
+    const controlPanel = document.getElementById('control-panel');
+    const ledSwitch = document.getElementById('led-switch');
+    const notifyValue = document.getElementById('notify-value');
+    const consoleLog = document.getElementById('console-log');
+
+    let bleDevice = null;
+    let bleServer = null;
+    let ledChar = null;
+    let statusChar = null;
+
+    function log(message, type = 'info') {
+      const now = new Date();
+      const timeStr = now.toTimeString().split(' ')[0];
+      const entry = document.createElement('div');
+      entry.className = 'log-entry';
+      entry.innerHTML = `<span class="log-time">[${timeStr}]</span><span class="log-${type}">${message}</span>`;
+      consoleLog.appendChild(entry);
+      consoleLog.scrollTop = consoleLog.scrollHeight;
+    }
+
+    connectBtn.addEventListener('click', async () => {
+      try {
+        log('Requesting Bluetooth Device...');
+        bleDevice = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'nice_nano' }],
+          optionalServices: [SERVICE_UUID]
+        });
+
+        log(`Found device: ${bleDevice.name}. Connecting...`);
+        bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+        bleServer = await bleDevice.gatt.connect();
+        log('Connected to GATT Server. Discovering service...', 'success');
+
+        const service = await bleServer.getPrimaryService(SERVICE_UUID);
+        log('Service discovered. Finding characteristics...');
+
+        ledChar = await service.getCharacteristic(LED_CHAR_UUID);
+        log('LED Characteristic found.', 'success');
+
+        statusChar = await service.getCharacteristic(STATUS_CHAR_UUID);
+        log('Status Characteristic found.', 'success');
+
+        // Setup notifications
+        log('Subscribing to status notifications...');
+        await statusChar.startNotifications();
+        statusChar.addEventListener('characteristicvaluechanged', handleNotifications);
+        log('Subscribed successfully. UI Ready.', 'success');
+
+        // Update UI
+        statusBadge.className = 'status-badge connected';
+        statusText.textContent = 'Connected';
+        connectBtn.style.display = 'none';
+        disconnectBtn.style.display = 'block';
+        controlPanel.style.display = 'flex';
+
+      } catch (error) {
+        log(`Error: ${error.message || error}`, 'warn');
+        console.error(error);
+      }
+    });
+
+    disconnectBtn.addEventListener('click', () => {
+      if (bleDevice && bleDevice.gatt.connected) {
+        log('Disconnecting manually...');
+        bleDevice.gatt.disconnect();
+      }
+    });
+
+    function onDisconnected() {
+      log('Bluetooth Device disconnected.', 'warn');
+      
+      // Update UI
+      statusBadge.className = 'status-badge';
+      statusText.textContent = 'Disconnected';
+      connectBtn.style.display = 'block';
+      disconnectBtn.style.display = 'none';
+      controlPanel.style.display = 'none';
+
+      bleDevice = null;
+      bleServer = null;
+      ledChar = null;
+      statusChar = null;
+    }
+
+    async function handleNotifications(event) {
+      const value = event.target.value.getUint8(0);
+      notifyValue.textContent = value;
+      log(`Received notification: ${value}`);
+    }
+
+    ledSwitch.addEventListener('change', async (e) => {
+      if (!ledChar) return;
+      
+      // Write 0x02 for Manual ON, 0x01 for Manual OFF, 0x00 for Auto blink
+      // In main.rs: 0 = Auto blink, 1 = Manual OFF, 2 = Manual ON
+      // Checkbox checked = Manual ON (0x02), unchecked = Auto blink (0x00)
+      const val = e.target.checked ? 0x02 : 0x00;
+      
+      try {
+        log(`Sending LED command: ${val === 0x02 ? 'ON' : 'Auto blink (default)'}...`);
+        await ledChar.writeValue(new Uint8Array([val]));
+        log('Command executed successfully.', 'success');
+      } catch (error) {
+        log(`Write failed: ${error.message || error}`, 'warn');
+      }
+    });
+  </script>
+</body>
+</html>

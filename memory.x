@@ -1,9 +1,8 @@
 MEMORY
 {
-  /* FLASH offset is 0x1000. Length is 1020K (1024K total minus 4K MBR). */
-  FLASH : ORIGIN = 0x00001000, LENGTH = 1020K
+  /* SoftDevice S140 v7.3.0 size: 156KB (0x27000) */
+  FLASH : ORIGIN = 0x00027000, LENGTH = 868K
   
-  /* RAM origin is shifted by 8 bytes to protect the Adafruit bootloader's */
-  /* soft reset / boot detection magic flags at the start of RAM (0x20000000). */
-  RAM   : ORIGIN = 0x20000008, LENGTH = 262136
+  /* RAM starts at 0x20010000 to give the SoftDevice 64KB of RAM (adjustable). Length is 192K. */
+  RAM   : ORIGIN = 0x20010000, LENGTH = 192K
 }

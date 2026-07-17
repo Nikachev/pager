@@ -3,15 +3,16 @@ use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embedded_io_async::Write;
 use embassy_time::{Duration, Timer};
-use crate::flash::{raw_flash_erase, raw_flash_write_block, copy_and_reset};
+use crate::flash::copy_and_reset;
+use embedded_storage_async::nor_flash::NorFlash;
 
-pub const MAX_BIN_SIZE: usize = 480 * 1024;
-pub const STAGING_START_ADDR: u32 = 0x7A000;
-pub const ACTIVE_START_ADDR: u32 = 0x1000;
+pub const MAX_BIN_SIZE: usize = 400 * 1024;
+pub const STAGING_START_ADDR: u32 = 0x8C000;
+pub const ACTIVE_START_ADDR: u32 = 0x27000;
 
 // Web server task serving the responsive HTML page on port 80 and handling POST /update
 #[embassy_executor::task]
-pub async fn web_task(stack: Stack<'static>) -> ! {
+pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice::Flash) -> ! {
     let mut rx_buffer = [0u8; 2048];
     let mut tx_buffer = [0u8; 2048];
     let mut buf = [0u8; 2048]; // Buffered HTTP headers
@@ -95,8 +96,8 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let erase_size = (content_len + page_size - 1) & !(page_size - 1);
 
             info!("Erasing staging partition: {} bytes...", erase_size);
-            unsafe {
-                raw_flash_erase(STAGING_START_ADDR, erase_size as u32);
+            if let Err(e) = flash.erase(STAGING_START_ADDR, STAGING_START_ADDR + erase_size as u32).await {
+                warn!("Flash erase error: {:?}", e);
             }
 
             // Stream and write raw POST body directly to update partition.
@@ -109,30 +110,36 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let initial_body_len = read_len - body_start;
             let mut total_read = 0;
 
-            let mut process_bytes = |data: &[u8]| -> Result<(), ()> {
-                let mut data_idx = 0;
-                while data_idx < data.len() {
-                    let chunk_size = core::cmp::min(data.len() - data_idx, write_buffer.len() - write_buf_len);
-                    write_buffer[write_buf_len..write_buf_len + chunk_size]
-                        .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
-                    write_buf_len += chunk_size;
-                    data_idx += chunk_size;
+            macro_rules! write_flash_chunk {
+                ($data:expr) => {{
+                    let data = $data;
+                    let mut data_idx = 0;
+                    let mut ok = true;
+                    while data_idx < data.len() {
+                        let chunk_size = core::cmp::min(data.len() - data_idx, write_buffer.len() - write_buf_len);
+                        write_buffer[write_buf_len..write_buf_len + chunk_size]
+                            .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
+                        write_buf_len += chunk_size;
+                        data_idx += chunk_size;
 
-                    if write_buf_len == write_buffer.len() {
-                        unsafe {
-                            raw_flash_write_block(flash_offset, &write_buffer);
+                        if write_buf_len == write_buffer.len() {
+                            if let Err(e) = flash.write(flash_offset, &write_buffer).await {
+                                warn!("Flash write error: {:?}", e);
+                                ok = false;
+                                break;
+                            }
+                            flash_offset += write_buffer.len() as u32;
+                            write_buf_len = 0;
                         }
-                        flash_offset += write_buffer.len() as u32;
-                        write_buf_len = 0;
                     }
-                }
-                Ok(())
-            };
+                    if ok { Ok(()) } else { Err(()) }
+                }};
+            }
 
             // Write initial block
             if initial_body_len > 0 {
                 let bytes_to_process = core::cmp::min(initial_body_len, content_len);
-                if let Err(_) = process_bytes(&buf[body_start..body_start + bytes_to_process]) {
+                if let Err(_) = write_flash_chunk!(&buf[body_start..body_start + bytes_to_process]) {
                     warn!("Staging write error");
                     total_read = 0;
                 } else {
@@ -150,7 +157,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                         break;
                     }
                     Ok(n) => {
-                        if let Err(_) = process_bytes(&read_buf[..n]) {
+                        if let Err(_) = write_flash_chunk!(&read_buf[..n]) {
                             warn!("Staging write error");
                             break;
                         }
@@ -166,8 +173,8 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             if total_read == content_len {
                 // Write any remaining buffered bytes
                 if write_buf_len > 0 {
-                    unsafe {
-                        raw_flash_write_block(flash_offset, &write_buffer[..write_buf_len]);
+                    if let Err(e) = flash.write(flash_offset, &write_buffer[..write_buf_len]).await {
+                        warn!("Flash final write error: {:?}", e);
                     }
                 }
 
