@@ -33,15 +33,15 @@ const DHCP_POOL_START: Ipv4Addr = Ipv4Addr::new(192, 168, 42, 2);
 const DHCP_POOL_END: Ipv4Addr = Ipv4Addr::new(192, 168, 42, 10);
 
 // Hardware MAC Configuration Constants
-const HOST_MAC_ADDR: [u8; 6] = [0x88, 0x88, 0x88, 0x88, 0x88, 0x8c];
-const DEVICE_MAC_ADDR: [u8; 6] = [0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xd0];
+const HOST_MAC_ADDR: [u8; 6] = [0x88, 0x88, 0x88, 0x88, 0x88, 0x92];
+const DEVICE_MAC_ADDR: [u8; 6] = [0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xd6];
 
 // USB Stack Configuration Constants
 const USB_VENDOR_ID: u16 = 0xc0de;
 const USB_PRODUCT_ID: u16 = 0xcafe;
 const USB_MANUFACTURER: &str = "Embassy";
 const USB_PRODUCT_NAME: &str = "nice!nano v2 Web Server";
-const USB_SERIAL_NUMBER: &str = "12345678";
+const USB_SERIAL_NUMBER: &str = "12345680";
 
 const MTU: usize = 1514;
 type MyDriver = Driver<'static, HardwareVbusDetect>;
