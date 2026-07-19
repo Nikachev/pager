@@ -28,6 +28,45 @@ pub static LED_MODE: Signal<ThreadModeRawMutex, u8> = Signal::new();
 
 pub static LOG_CHANNEL: embassy_sync::channel::Channel<ThreadModeRawMutex, heapless::String<128>, 32> = embassy_sync::channel::Channel::new();
 
+pub struct LogHistory {
+    lines: heapless::Vec<heapless::String<96>, 24>,
+}
+
+impl LogHistory {
+    pub const fn new() -> Self {
+        Self {
+            lines: heapless::Vec::new(),
+        }
+    }
+
+    pub fn push(&mut self, line: &str) {
+        let trimmed = line.trim_end();
+        let limit = core::cmp::min(trimmed.len(), 95);
+        let mut s = heapless::String::new();
+        if s.push_str(&trimmed[..limit]).is_ok() {
+            if self.lines.is_full() {
+                self.lines.remove(0);
+            }
+            let _ = self.lines.push(s);
+        }
+    }
+}
+
+pub static LOG_HISTORY: embassy_sync::blocking_mutex::Mutex<ThreadModeRawMutex, core::cell::RefCell<LogHistory>> =
+    embassy_sync::blocking_mutex::Mutex::new(core::cell::RefCell::new(LogHistory::new()));
+
+pub fn log_to_history(s: &str) {
+    LOG_HISTORY.lock(|cell| {
+        cell.borrow_mut().push(s);
+    });
+}
+
+pub fn get_logs() -> heapless::Vec<heapless::String<96>, 24> {
+    LOG_HISTORY.lock(|cell| {
+        cell.borrow().lines.clone()
+    })
+}
+
 #[macro_export]
 macro_rules! log_msg {
     ($($arg:tt)*) => {
@@ -39,7 +78,8 @@ macro_rules! log_msg {
             let mut s = heapless::String::<128>::new();
             if core::fmt::write(&mut s, format_args!($($arg)*)).is_ok() {
                 let _ = s.push_str("\r\n");
-                let _ = $crate::LOG_CHANNEL.try_send(s);
+                let _ = $crate::LOG_CHANNEL.try_send(s.clone());
+                $crate::log_to_history(&s);
             }
         }
     };
@@ -128,7 +168,10 @@ fn starts_with(data: &[u8], prefix: &[u8]) -> bool {
 
 // USB CDC-ACM Receiver task to reset to DFU/Bootloader
 #[embassy_executor::task]
-async fn usb_receiver_task(mut receiver: embassy_usb::class::cdc_acm::Receiver<'static, MyDriver>) -> ! {
+async fn usb_receiver_task(
+    mut receiver: embassy_usb::class::cdc_acm::Receiver<'static, MyDriver>,
+    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_softdevice::Flash>,
+) -> ! {
     let mut buf = [0u8; 64];
     loop {
         receiver.wait_connection().await;
@@ -145,6 +188,78 @@ async fn usb_receiver_task(mut receiver: embassy_usb::class::cdc_acm::Receiver<'
                             let _ = nrf_softdevice::raw::sd_power_gpregret_set(0, 0x57);
                             let aircr = 0xE000ED0C as *mut u32;
                             core::ptr::write_volatile(aircr, 0x05FA0004);
+                        }
+                    } else if starts_with(cmd, b"update ") {
+                        // Parse size
+                        let mut size = 0;
+                        let mut valid = false;
+                        for &c in &cmd[7..] {
+                            if c >= b'0' && c <= b'9' {
+                                size = size * 10 + (c - b'0') as usize;
+                                valid = true;
+                            } else if c == b'\r' || c == b'\n' || c == b' ' {
+                                break;
+                            } else {
+                                valid = false;
+                                break;
+                            }
+                        }
+
+                        if valid && size > 0 && size <= crate::web::MAX_BIN_SIZE {
+                            crate::log_msg!("SERIAL_UPDATE:READY");
+                            
+                            let mut write_error = false;
+                            let mut total_read = 0;
+                            
+                            // Lock flash
+                            let mut flash = flash_mutex.lock().await;
+                            let mut writer = crate::flash::OtaWriter::new(&mut *flash, crate::web::STAGING_START_ADDR);
+                            
+                            if let Err(_e) = writer.erase(size).await {
+                                crate::log_msg!("SERIAL_UPDATE:ERROR_ERASE");
+                                write_error = true;
+                            }
+                            
+                            while !write_error && total_read < size {
+                                let mut read_buf = [0u8; 64];
+                                match receiver.read_packet(&mut read_buf).await {
+                                    Ok(n_pack) => {
+                                        if n_pack > 0 {
+                                            let chunk = &read_buf[..n_pack];
+                                            if let Err(_e) = writer.write_chunk(chunk).await {
+                                                crate::log_msg!("SERIAL_UPDATE:ERROR_WRITE");
+                                                write_error = true;
+                                                break;
+                                            }
+                                            total_read += n_pack;
+                                        }
+                                    }
+                                    Err(_e) => {
+                                        crate::log_msg!("SERIAL_UPDATE:ERROR_DISCONNECT");
+                                        write_error = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if !write_error && total_read == size {
+                                if let Err(_e) = writer.flush().await {
+                                    crate::log_msg!("SERIAL_UPDATE:ERROR_FLUSH");
+                                } else {
+                                    crate::log_msg!("SERIAL_UPDATE:SUCCESS");
+                                    // Wait 500ms and reset
+                                    embassy_time::Timer::after(embassy_time::Duration::from_millis(500)).await;
+                                    unsafe {
+                                        crate::flash::copy_and_reset(
+                                            crate::web::STAGING_START_ADDR,
+                                            crate::web::ACTIVE_START_ADDR,
+                                            size as u32,
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            crate::log_msg!("SERIAL_UPDATE:ERROR_INVALID_SIZE");
                         }
                     }
                 }
@@ -278,6 +393,11 @@ async fn main(spawner: Spawner) {
     
     // Downgrade to shared static reference for sharing between tasks
     let sd: &'static nrf_softdevice::Softdevice = &*sd;
+
+    // Initialize SoftDevice safe Flash driver wrapped in a Mutex
+    let flash = nrf_softdevice::Flash::take(sd);
+    static FLASH: StaticCell<embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_softdevice::Flash>> = StaticCell::new();
+    let flash_mutex = FLASH.init(embassy_sync::mutex::Mutex::new(flash));
     
     spawner.spawn(unwrap!(softdevice_task(sd)));
 
@@ -370,7 +490,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(usb_logger_task(acm_sender)));
 
     // Spawn USB receiver task
-    spawner.spawn(unwrap!(usb_receiver_task(acm_receiver)));
+    spawner.spawn(unwrap!(usb_receiver_task(acm_receiver, flash_mutex)));
 
     // Split NCM class into net device and runner
     static NET_STATE: StaticCell<NetState<MTU, 4, 4>> = StaticCell::new();
@@ -402,13 +522,8 @@ async fn main(spawner: Spawner) {
     // Spawn DHCP server task
     spawner.spawn(unwrap!(dhcp_task(stack)));
 
-    // Initialize SoftDevice safe Flash driver
-    let flash = nrf_softdevice::Flash::take(sd);
-    static FLASH: StaticCell<nrf_softdevice::Flash> = StaticCell::new();
-    let flash_ref = FLASH.init(flash);
-
     // Spawn Web server task from the web module
-    spawner.spawn(unwrap!(web::web_task(stack, flash_ref)));
+    spawner.spawn(unwrap!(web::web_task(stack, flash_mutex)));
 }
 
 const P0_PIN_CNF_15: *mut u32 = 0x5000073C as *mut u32;

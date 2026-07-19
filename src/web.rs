@@ -4,7 +4,7 @@ use embassy_net::tcp::TcpSocket;
 use embedded_io_async::Write;
 use embassy_time::{Duration, Timer};
 use crate::flash::copy_and_reset;
-use embedded_storage_async::nor_flash::NorFlash;
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 
 pub const MAX_BIN_SIZE: usize = 400 * 1024;
 pub const STAGING_START_ADDR: u32 = 0x8C000;
@@ -12,61 +12,12 @@ pub const ACTIVE_START_ADDR: u32 = 0x27000;
 
 const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
 
-pub struct OtaWriter<'a, F: NorFlash> {
-    flash: &'a mut F,
-    offset: u32,
-    write_buffer: [u8; 256],
-    write_buf_len: usize,
-}
-
-impl<'a, F: NorFlash> OtaWriter<'a, F> {
-    pub fn new(flash: &'a mut F, start_addr: u32) -> Self {
-        Self {
-            flash,
-            offset: start_addr,
-            write_buffer: [0u8; 256],
-            write_buf_len: 0,
-        }
-    }
-
-    pub async fn erase(&mut self, size: usize) -> Result<(), F::Error> {
-        let page_size = 4096;
-        let erase_size = (size + page_size - 1) & !(page_size - 1);
-        crate::log_msg!("Erasing staging partition: {} bytes...", erase_size);
-        self.flash.erase(self.offset, self.offset + erase_size as u32).await
-    }
-
-    pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), F::Error> {
-        let mut data_idx = 0;
-        while data_idx < data.len() {
-            let chunk_size = core::cmp::min(data.len() - data_idx, self.write_buffer.len() - self.write_buf_len);
-            self.write_buffer[self.write_buf_len..self.write_buf_len + chunk_size]
-                .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
-            self.write_buf_len += chunk_size;
-            data_idx += chunk_size;
-
-            if self.write_buf_len == self.write_buffer.len() {
-                self.flash.write(self.offset, &self.write_buffer).await?;
-                self.offset += self.write_buffer.len() as u32;
-                self.write_buf_len = 0;
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn flush(&mut self) -> Result<(), F::Error> {
-        if self.write_buf_len > 0 {
-            self.flash.write(self.offset, &self.write_buffer[..self.write_buf_len]).await?;
-            self.offset += self.write_buf_len as u32;
-            self.write_buf_len = 0;
-        }
-        Ok(())
-    }
-}
-
-// Web server task serving the responsive HTML page on port 80 and handling POST /update
+// Web server task serving the responsive HTML page on port 80 and handling requests
 #[embassy_executor::task]
-pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice::Flash) -> ! {
+pub async fn web_task(
+    stack: Stack<'static>,
+    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_softdevice::Flash>,
+) -> ! {
     let mut rx_buffer = [0u8; 2048];
     let mut tx_buffer = [0u8; 2048];
     let mut buf = [0u8; 2048]; // Buffered HTTP headers
@@ -139,14 +90,15 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
 
             if content_len > MAX_BIN_SIZE {
                 warn!("Upload size exceeds limit");
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 22\r\nConnection: close\r\n\r\nFile exceeds 480KB limit";
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 22\r\nConnection: close\r\n\r\nFile exceeds 400KB limit";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
                 continue;
             }
 
-            let mut writer = OtaWriter::new(flash, STAGING_START_ADDR);
+            let mut flash = flash_mutex.lock().await;
+            let mut writer = crate::flash::OtaWriter::new(&mut *flash, STAGING_START_ADDR);
 
             if let Err(e) = writer.erase(content_len).await {
                 warn!("Flash erase error: {:?}", e);
@@ -198,7 +150,7 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 }
 
                 crate::log_msg!("Staging complete! Sending success HTTP response...");
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
@@ -223,7 +175,38 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 let _ = socket.flush().await;
                 socket.close();
             }
-        } else {
+        } else if starts_with(request_line, b"POST /bootloader") {
+            crate::log_msg!("Rebooting to Bootloader (UF2) via HTTP...");
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+
+            // Wait a bit for response to send
+            Timer::after(Duration::from_millis(500)).await;
+
+            unsafe {
+                let _ = nrf_softdevice::raw::sd_power_gpregret_set(0, 0x57);
+                let aircr = 0xE000ED0C as *mut u32;
+                core::ptr::write_volatile(aircr, 0x05FA0004);
+            }
+        } else if starts_with(request_line, b"GET /logs") {
+            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(headers.as_bytes()).await;
+
+            let logs = crate::get_logs();
+            for line in logs.iter() {
+                let mut formatted = heapless::String::<128>::new();
+                let _ = core::fmt::write(&mut formatted, format_args!("{}\n", line));
+                if let Err(e) = socket.write_all(formatted.as_bytes()).await {
+                    warn!("write error: {:?}", e);
+                    break;
+                }
+            }
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(500)).await;
+        } else if starts_with(request_line, b"GET / ") || starts_with(request_line, b"GET /index.html") {
             // Serve standard web interface page
             let html = include_str!("index.html");
             let headers = concat!(
@@ -233,15 +216,16 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 "\r\n"
             );
 
-            if let Err(e) = socket.write_all(headers.as_bytes()).await {
-                warn!("write error: {:?}", e);
-            }
-            if let Err(e) = socket.write_all(html.as_bytes()).await {
-                warn!("write error: {:?}", e);
-            }
-            if let Err(e) = socket.flush().await {
-                warn!("flush error: {:?}", e);
-            }
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.write_all(html.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(500)).await;
+        } else {
+            // 404 Not Found
+            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
             socket.close();
             Timer::after(Duration::from_millis(500)).await;
         }

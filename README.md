@@ -84,3 +84,43 @@ If SoftDevice is already present:
 2. Click **Connect to nice!nano** on the page.
 3. Select your device `nice_nano` in the pairing popup.
 4. Once connected, toggle the LED switch or monitor the incoming heartbeat notifications on the live terminal.
+
+---
+
+## 💻 Device Management (HTTP & Serial)
+
+The firmware supports retrieving logs, rebooting to the bootloader, and updating firmware via both HTTP and USB Serial interfaces.
+
+### HTTP Interface (Web UI)
+*   **Live Debug Logs**: Served at `http://192.168.42.1/logs`. The web page at `http://192.168.42.1/` automatically polls this endpoint every 2 seconds to display logs in real-time.
+*   **Reboot to Bootloader**: Triggered by sending a `POST` request to `http://192.168.42.1/bootloader`, or by clicking the **Reboot to Bootloader** button on the web portal.
+*   **Web OTA Update**: Handled via `POST /update` with the binary file.
+
+### USB Serial Interface (CDC-ACM)
+When connected, the board streams logs in real-time. You can connect to the serial port (e.g. `/dev/cu.usbmodem123456803` on macOS) at `115200` baud.
+*   **Reboot to Bootloader**: Send `bootloader` or `dfu` to the serial port.
+*   **Serial Firmware Update**:
+    1. Send `update <size_in_bytes>\n` to the serial port.
+    2. Wait for the `SERIAL_UPDATE:READY` log message.
+    3. Stream exactly `<size_in_bytes>` raw binary bytes to the serial port.
+    4. Upon successful completion, the board writes the firmware, prints `SERIAL_UPDATE:SUCCESS`, and reboots.
+
+---
+
+## 🧪 Integration Testing
+
+A comprehensive integration test suite is available in `tests/test_device.py` to verify Bluetooth LE, HTTP endpoints, and Serial commands against a physically connected board.
+
+### Prerequisites
+Install the required Python testing packages on the host:
+```bash
+pip3 install pyserial bleak
+```
+
+### Running Tests
+Execute the test runner:
+```bash
+python3 -m unittest -v tests/test_device.py
+```
+*Note: During bootloader reboot tests, the test suite automatically resets the board back to application mode by copying the UF2 binary to the mounted `/Volumes/NICENANO` volume, ensuring the board is not left in bootloader mode.*
+

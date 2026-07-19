@@ -167,6 +167,57 @@
       font-weight: 600;
       margin-top: 2px;
     }
+    /* New Controls and Logs Styles */
+    .control-btn {
+      background: rgba(239, 68, 68, 0.1);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      color: #f87171;
+      padding: 14px;
+      border-radius: 14px;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all 0.3s;
+      width: 100%;
+    }
+    .control-btn:hover {
+      background: rgba(239, 68, 68, 0.2);
+      box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
+      transform: translateY(-2px);
+    }
+    .log-console {
+      background: #0f172a;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-radius: 14px;
+      padding: 16px;
+      height: 180px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: #cbd5e1;
+      text-align: left;
+      white-space: pre-wrap;
+    }
+    .btn-group {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+    }
+    .small-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #cbd5e1;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+      flex: 1;
+    }
+    .small-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
     @keyframes pulse {
       0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
       70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
@@ -199,6 +250,22 @@
         <div class="progress-bar-fill" id="progress-fill"></div>
       </div>
       <div class="ota-status" id="ota-status"></div>
+    </div>
+
+    <!-- Device Controls -->
+    <div class="ota-container">
+      <div class="ota-title">Device Controls</div>
+      <button class="control-btn" id="bootloader-btn">Reboot to Bootloader</button>
+    </div>
+
+    <!-- System Logs -->
+    <div class="ota-container">
+      <div class="ota-title">System Logs</div>
+      <div class="log-console" id="log-console">Loading logs...</div>
+      <div class="btn-group">
+        <button class="small-btn" id="clear-logs-btn">Clear Logs View</button>
+        <button class="small-btn" id="toggle-poll-btn">Pause Auto-Refresh</button>
+      </div>
     </div>
   </div>
 
@@ -272,6 +339,76 @@
       // Send raw file binary buffer
       xhr.send(file);
     });
+
+    // Reboot to Bootloader Control
+    const bootloaderBtn = document.getElementById('bootloader-btn');
+    bootloaderBtn.addEventListener('click', async () => {
+      if (confirm('Are you sure you want to reboot the device to bootloader mode?')) {
+        bootloaderBtn.disabled = true;
+        try {
+          const response = await fetch('/bootloader', { method: 'POST' });
+          if (response.ok) {
+            bootloaderBtn.textContent = 'Rebooting...';
+            alert('Device is rebooting to bootloader mode. Please wait for the board to reconnect.');
+          } else {
+            alert('Failed to reboot: ' + response.statusText);
+            bootloaderBtn.disabled = false;
+          }
+        } catch (e) {
+          alert('Error sending request: ' + e);
+          bootloaderBtn.disabled = false;
+        }
+      }
+    });
+
+    // System Logs Polling
+    const logConsole = document.getElementById('log-console');
+    const togglePollBtn = document.getElementById('toggle-poll-btn');
+    const clearLogsBtn = document.getElementById('clear-logs-btn');
+    let pollInterval = null;
+    let isPolling = true;
+
+    async function fetchLogs() {
+      try {
+        const response = await fetch('/logs');
+        if (response.ok) {
+          const text = await response.text();
+          logConsole.textContent = text || 'No logs available.';
+          logConsole.scrollTop = logConsole.scrollHeight;
+        }
+      } catch (e) {
+        console.error('Error fetching logs:', e);
+      }
+    }
+
+    function startPolling() {
+      fetchLogs();
+      pollInterval = setInterval(fetchLogs, 2000);
+    }
+
+    function stopPolling() {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+
+    togglePollBtn.addEventListener('click', () => {
+      if (isPolling) {
+        stopPolling();
+        togglePollBtn.textContent = 'Resume Auto-Refresh';
+        isPolling = false;
+      } else {
+        startPolling();
+        togglePollBtn.textContent = 'Pause Auto-Refresh';
+        isPolling = true;
+      }
+    });
+
+    clearLogsBtn.addEventListener('click', () => {
+      logConsole.textContent = '';
+    });
+
+    // Start logs polling automatically
+    startPolling();
   </script>
 </body>
 </html>

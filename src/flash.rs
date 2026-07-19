@@ -46,3 +46,58 @@ pub unsafe fn copy_and_reset(src_addr: u32, dest_addr: u32, len_bytes: u32) -> !
     loop {}
 }
 
+use embedded_storage_async::nor_flash::NorFlash;
+
+pub struct OtaWriter<'a, F: NorFlash> {
+    flash: &'a mut F,
+    offset: u32,
+    write_buffer: [u8; 256],
+    write_buf_len: usize,
+}
+
+impl<'a, F: NorFlash> OtaWriter<'a, F> {
+    pub fn new(flash: &'a mut F, start_addr: u32) -> Self {
+        Self {
+            flash,
+            offset: start_addr,
+            write_buffer: [0u8; 256],
+            write_buf_len: 0,
+        }
+    }
+
+    pub async fn erase(&mut self, size: usize) -> Result<(), F::Error> {
+        let page_size = 4096;
+        let erase_size = (size + page_size - 1) & !(page_size - 1);
+        crate::log_msg!("Erasing staging partition: {} bytes...", erase_size);
+        self.flash.erase(self.offset, self.offset + erase_size as u32).await
+    }
+
+    pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), F::Error> {
+        let mut data_idx = 0;
+        while data_idx < data.len() {
+            let chunk_size = core::cmp::min(data.len() - data_idx, self.write_buffer.len() - self.write_buf_len);
+            self.write_buffer[self.write_buf_len..self.write_buf_len + chunk_size]
+                .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
+            self.write_buf_len += chunk_size;
+            data_idx += chunk_size;
+
+            if self.write_buf_len == self.write_buffer.len() {
+                self.flash.write(self.offset, &self.write_buffer).await?;
+                self.offset += self.write_buffer.len() as u32;
+                self.write_buf_len = 0;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn flush(&mut self) -> Result<(), F::Error> {
+        if self.write_buf_len > 0 {
+            self.flash.write(self.offset, &self.write_buffer[..self.write_buf_len]).await?;
+            self.offset += self.write_buf_len as u32;
+            self.write_buf_len = 0;
+        }
+        Ok(())
+    }
+}
+
+
