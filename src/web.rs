@@ -10,6 +10,60 @@ pub const MAX_BIN_SIZE: usize = 400 * 1024;
 pub const STAGING_START_ADDR: u32 = 0x8C000;
 pub const ACTIVE_START_ADDR: u32 = 0x27000;
 
+const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
+
+pub struct OtaWriter<'a, F: NorFlash> {
+    flash: &'a mut F,
+    offset: u32,
+    write_buffer: [u8; 256],
+    write_buf_len: usize,
+}
+
+impl<'a, F: NorFlash> OtaWriter<'a, F> {
+    pub fn new(flash: &'a mut F, start_addr: u32) -> Self {
+        Self {
+            flash,
+            offset: start_addr,
+            write_buffer: [0u8; 256],
+            write_buf_len: 0,
+        }
+    }
+
+    pub async fn erase(&mut self, size: usize) -> Result<(), F::Error> {
+        let page_size = 4096;
+        let erase_size = (size + page_size - 1) & !(page_size - 1);
+        crate::log_msg!("Erasing staging partition: {} bytes...", erase_size);
+        self.flash.erase(self.offset, self.offset + erase_size as u32).await
+    }
+
+    pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), F::Error> {
+        let mut data_idx = 0;
+        while data_idx < data.len() {
+            let chunk_size = core::cmp::min(data.len() - data_idx, self.write_buffer.len() - self.write_buf_len);
+            self.write_buffer[self.write_buf_len..self.write_buf_len + chunk_size]
+                .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
+            self.write_buf_len += chunk_size;
+            data_idx += chunk_size;
+
+            if self.write_buf_len == self.write_buffer.len() {
+                self.flash.write(self.offset, &self.write_buffer).await?;
+                self.offset += self.write_buffer.len() as u32;
+                self.write_buf_len = 0;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn flush(&mut self) -> Result<(), F::Error> {
+        if self.write_buf_len > 0 {
+            self.flash.write(self.offset, &self.write_buffer[..self.write_buf_len]).await?;
+            self.offset += self.write_buf_len as u32;
+            self.write_buf_len = 0;
+        }
+        Ok(())
+    }
+}
+
 // Web server task serving the responsive HTML page on port 80 and handling POST /update
 #[embassy_executor::task]
 pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice::Flash) -> ! {
@@ -21,13 +75,13 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
 
-        info!("Web server listening on port 80...");
+        crate::log_msg!("Web server listening on port 80...");
         if let Err(e) = socket.accept(80).await {
             warn!("accept error: {:?}", e);
             continue;
         }
 
-        info!("Connection accepted from {:?}", socket.remote_endpoint());
+        crate::log_msg!("Connection accepted from {:?}", socket.remote_endpoint());
 
         // Read initial data to locate end of HTTP headers
         let mut read_len = 0;
@@ -81,7 +135,7 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 }
             };
 
-            info!("OTA update request received. Size: {} bytes", content_len);
+            crate::log_msg!("OTA update request received. Size: {} bytes", content_len);
 
             if content_len > MAX_BIN_SIZE {
                 warn!("Upload size exceeds limit");
@@ -92,56 +146,23 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 continue;
             }
 
-            let page_size = 4096;
-            let erase_size = (content_len + page_size - 1) & !(page_size - 1);
+            let mut writer = OtaWriter::new(flash, STAGING_START_ADDR);
 
-            info!("Erasing staging partition: {} bytes...", erase_size);
-            if let Err(e) = flash.erase(STAGING_START_ADDR, STAGING_START_ADDR + erase_size as u32).await {
+            if let Err(e) = writer.erase(content_len).await {
                 warn!("Flash erase error: {:?}", e);
             }
-
-            // Stream and write raw POST body directly to update partition.
-            // Accumulate blocks in a local buffer to ensure 4-byte NVMC write alignment.
-            let mut write_buffer = [0u8; 256];
-            let mut write_buf_len = 0;
-            let mut flash_offset = STAGING_START_ADDR;
 
             let body_start = headers_end + 4;
             let initial_body_len = read_len - body_start;
             let mut total_read = 0;
-
-            macro_rules! write_flash_chunk {
-                ($data:expr) => {{
-                    let data = $data;
-                    let mut data_idx = 0;
-                    let mut ok = true;
-                    while data_idx < data.len() {
-                        let chunk_size = core::cmp::min(data.len() - data_idx, write_buffer.len() - write_buf_len);
-                        write_buffer[write_buf_len..write_buf_len + chunk_size]
-                            .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
-                        write_buf_len += chunk_size;
-                        data_idx += chunk_size;
-
-                        if write_buf_len == write_buffer.len() {
-                            if let Err(e) = flash.write(flash_offset, &write_buffer).await {
-                                warn!("Flash write error: {:?}", e);
-                                ok = false;
-                                break;
-                            }
-                            flash_offset += write_buffer.len() as u32;
-                            write_buf_len = 0;
-                        }
-                    }
-                    if ok { Ok(()) } else { Err(()) }
-                }};
-            }
+            let mut write_error = false;
 
             // Write initial block
             if initial_body_len > 0 {
                 let bytes_to_process = core::cmp::min(initial_body_len, content_len);
-                if let Err(_) = write_flash_chunk!(&buf[body_start..body_start + bytes_to_process]) {
-                    warn!("Staging write error");
-                    total_read = 0;
+                if let Err(e) = writer.write_chunk(&buf[body_start..body_start + bytes_to_process]).await {
+                    warn!("Staging write error: {:?}", e);
+                    write_error = true;
                 } else {
                     total_read += bytes_to_process;
                 }
@@ -149,7 +170,7 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
 
             // Read remaining data from network socket
             let mut read_buf = [0u8; 1024];
-            while total_read < content_len {
+            while !write_error && total_read < content_len {
                 let to_read = core::cmp::min(read_buf.len(), content_len - total_read);
                 match socket.read(&mut read_buf[..to_read]).await {
                     Ok(0) => {
@@ -157,8 +178,9 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                         break;
                     }
                     Ok(n) => {
-                        if let Err(_) = write_flash_chunk!(&read_buf[..n]) {
-                            warn!("Staging write error");
+                        if let Err(e) = writer.write_chunk(&read_buf[..n]).await {
+                            warn!("Staging write error: {:?}", e);
+                            write_error = true;
                             break;
                         }
                         total_read += n;
@@ -170,15 +192,12 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
                 }
             }
 
-            if total_read == content_len {
-                // Write any remaining buffered bytes
-                if write_buf_len > 0 {
-                    if let Err(e) = flash.write(flash_offset, &write_buffer[..write_buf_len]).await {
-                        warn!("Flash final write error: {:?}", e);
-                    }
+            if !write_error && total_read == content_len {
+                if let Err(e) = writer.flush().await {
+                    warn!("Flash final write error: {:?}", e);
                 }
 
-                info!("Staging complete! Sending success HTTP response...");
+                crate::log_msg!("Staging complete! Sending success HTTP response...");
                 let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
@@ -189,17 +208,16 @@ pub async fn web_task(stack: Stack<'static>, flash: &'static mut nrf_softdevice:
 
                 // Disable USB pull-up for 3000ms to ensure host detects clean disconnect
                 unsafe {
-                    let usbpullup = 0x40027504 as *mut u32;
-                    core::ptr::write_volatile(usbpullup, 0);
+                    core::ptr::write_volatile(USB_USBPULLUP, 0);
                 }
                 Timer::after(Duration::from_millis(3000)).await;
 
-                info!("Initiating Active Bank self-flash and system reset!");
+                crate::log_msg!("Initiating Active Bank self-flash and system reset!");
                 unsafe {
                     copy_and_reset(STAGING_START_ADDR, ACTIVE_START_ADDR, content_len as u32);
                 }
             } else {
-                warn!("Upload incomplete. Expected {} but got {}", content_len, total_read);
+                crate::log_msg!("Upload incomplete. Expected {} but got {}", content_len, total_read);
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
@@ -288,3 +306,4 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
 
     if found_digit { Some(len) } else { None }
 }
+

@@ -26,7 +26,7 @@ pub struct Server {
 
 #[embassy_executor::task]
 pub async fn ble_task(sd: &'static Softdevice, server: &'static Server) -> ! {
-    info!("BLE GATT Server task started.");
+    crate::log_msg!("BLE GATT Server task started.");
 
     let adv_payload = LegacyAdvertisementBuilder::new()
         .flags(&[Flag::GeneralDiscovery, Flag::LE_Only])
@@ -45,7 +45,7 @@ pub async fn ble_task(sd: &'static Softdevice, server: &'static Server) -> ! {
 
     loop {
         let config = peripheral::Config::default();
-        info!("BLE Advertising started...");
+        crate::log_msg!("BLE Advertising started...");
         let conn = match peripheral::advertise_connectable(
             sd,
             peripheral::ConnectableAdvertisement::ScannableUndirected {
@@ -63,7 +63,7 @@ pub async fn ble_task(sd: &'static Softdevice, server: &'static Server) -> ! {
             }
         };
 
-        info!("BLE Connection established from {:?}", conn.peer_address());
+        crate::log_msg!("BLE Connection established from {:?}", conn.peer_address());
 
         // Periodically notify client with system uptime
         let server_ref = server;
@@ -84,16 +84,16 @@ pub async fn ble_task(sd: &'static Softdevice, server: &'static Server) -> ! {
             let e = gatt_server::run(&conn, server, |e| match e {
                 ServerEvent::Custom(e) => match e {
                     CustomServiceEvent::LedWrite(val) => {
-                        info!("BLE LED command received: {}", val);
+                        crate::log_msg!("BLE LED command received: {}", val);
                         crate::LED_MODE.signal(val);
                     }
                     CustomServiceEvent::StatusCccdWrite { notifications } => {
-                        info!("BLE status notification configuration changed: {}", notifications);
+                        crate::log_msg!("BLE status notification configuration changed: {}", notifications);
                     }
                 },
             })
             .await;
-            info!("BLE connection closed; error: {:?}", e);
+            crate::log_msg!("BLE connection closed; error: {:?}", e);
         };
 
         // Run both notify loop and gatt server loop concurrently

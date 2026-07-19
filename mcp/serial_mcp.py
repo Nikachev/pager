@@ -53,7 +53,7 @@ def handle_tools_list(req_id):
                         "properties": {
                             "port": {
                                 "type": "string",
-                                "description": "The serial port path (e.g. /dev/cu.usbmodem123456801)."
+                                "description": "The serial port path (e.g. /dev/cu.usbmodem123456801). If omitted, the server will scan and auto-detect the port."
                             },
                             "baudrate": {
                                 "type": "integer",
@@ -64,7 +64,7 @@ def handle_tools_list(req_id):
                                 "description": "Duration to listen in seconds. Default is 5."
                             }
                         },
-                        "required": ["port"]
+                        "required": []
                     }
                 }
             ]
@@ -105,6 +105,26 @@ def handle_tools_call(req_id, name, arguments):
         port = arguments.get("port")
         baudrate = arguments.get("baudrate", 115200)
         timeout = arguments.get("timeout_seconds", 5)
+
+        if not port:
+            # Auto-detect port
+            ports = glob.glob("/dev/cu.usbmodem*") + glob.glob("/dev/cu.usbserial*")
+            if ports:
+                port = ports[0]
+                log_debug(f"Auto-detected port: {port}")
+            else:
+                return {
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Error: Port not specified and no USB serial/modem ports found in /dev/cu.*"
+                            }
+                        ]
+                    }
+                }
 
         try:
             log_debug(f"Opening port {port} at {baudrate} baud...")

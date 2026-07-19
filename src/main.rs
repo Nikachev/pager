@@ -5,12 +5,13 @@ mod flash;
 mod web;
 mod ble;
 
-use defmt::{info, warn, error, unwrap};
+use defmt::{error, unwrap};
 use embassy_executor::Spawner;
 use embassy_nrf::usb::Driver;
 use embassy_nrf::{bind_interrupts, peripherals, Peri};
 use embassy_usb::class::cdc_ncm::embassy_net::{Device, Runner, State as NetState};
 use embassy_usb::class::cdc_ncm::{CdcNcmClass, State};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State as AcmState};
 use embassy_usb::{Builder, Config, UsbDevice};
 use embassy_net::{Stack, StackResources, Ipv4Address, Ipv4Cidr, StaticConfigV4};
 use embassy_time::{Duration, Timer};
@@ -21,10 +22,28 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::signal::Signal;
 use embassy_nrf::usb::vbus_detect::SoftwareVbusDetect;
 use nrf_softdevice::raw;
+use embedded_io_async::Write;
 
 pub static LED_MODE: Signal<ThreadModeRawMutex, u8> = Signal::new();
 
+pub static LOG_CHANNEL: embassy_sync::channel::Channel<ThreadModeRawMutex, heapless::String<128>, 32> = embassy_sync::channel::Channel::new();
 
+#[macro_export]
+macro_rules! log_msg {
+    ($($arg:tt)*) => {
+        {
+            // Log to RTT/defmt
+            defmt::info!($($arg)*);
+            
+            // Format and log to USB serial
+            let mut s = heapless::String::<128>::new();
+            if core::fmt::write(&mut s, format_args!($($arg)*)).is_ok() {
+                let _ = s.push_str("\r\n");
+                let _ = $crate::LOG_CHANNEL.try_send(s);
+            }
+        }
+    };
+}
 
 // Bind interrupts for the USB controller
 bind_interrupts!(struct Irqs {
@@ -85,11 +104,86 @@ async fn dhcp_task(stack: Stack<'static>) -> ! {
         DHCP_POOL_END,
     );
 
-    info!("DHCP server started. Waiting for requests on port 67...");
+    crate::log_msg!("DHCP server started. Waiting for requests on port 67...");
     server.run(stack).await;
 }
+// USB CDC-ACM Logger task
+#[embassy_executor::task]
+async fn usb_logger_task(mut sender: embassy_usb::class::cdc_acm::Sender<'static, MyDriver>) -> ! {
+    loop {
+        sender.wait_connection().await;
+        let _ = sender.write_all(b"nice!nano v2 serial logger started.\r\n").await;
+        loop {
+            let msg = LOG_CHANNEL.receive().await;
+            if let Err(_e) = sender.write_all(msg.as_bytes()).await {
+                break; // Host disconnected
+            }
+        }
+    }
+}
 
-// LED Blinky task for visual debugging and BLE control
+fn starts_with(data: &[u8], prefix: &[u8]) -> bool {
+    data.len() >= prefix.len() && &data[..prefix.len()] == prefix
+}
+
+// USB CDC-ACM Receiver task to reset to DFU/Bootloader
+#[embassy_executor::task]
+async fn usb_receiver_task(mut receiver: embassy_usb::class::cdc_acm::Receiver<'static, MyDriver>) -> ! {
+    let mut buf = [0u8; 64];
+    loop {
+        receiver.wait_connection().await;
+        loop {
+            match receiver.read_packet(&mut buf).await {
+                Ok(n) => {
+                    let cmd = &buf[..n];
+                    if starts_with(cmd, b"bootloader") || starts_with(cmd, b"dfu") {
+                        crate::log_msg!("Rebooting to Bootloader (UF2)...");
+                        // Delay 100ms for log to send
+                        embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+                        
+                        unsafe {
+                            let _ = nrf_softdevice::raw::sd_power_gpregret_set(0, 0x57);
+                            let aircr = 0xE000ED0C as *mut u32;
+                            core::ptr::write_volatile(aircr, 0x05FA0004);
+                        }
+                    }
+                }
+                Err(_e) => {
+                    break; // Host disconnected
+                }
+            }
+        }
+    }
+}
+
+// USB VBUS detection task to dynamically enable/disable USB stack
+#[embassy_executor::task]
+async fn vbus_detect_task(vbus_detect: &'static SoftwareVbusDetect) -> ! {
+    let usbregstatus = 0x40000438 as *const u32;
+    let mut last_detected = true;
+    let mut last_ready = true;
+
+    loop {
+        let status = unsafe { core::ptr::read_volatile(usbregstatus) };
+        let detected = (status & 1) != 0;
+        let ready = (status & 2) != 0;
+
+        if detected != last_detected {
+            vbus_detect.detected(detected);
+            last_detected = detected;
+        }
+
+        if ready != last_ready {
+            if ready {
+                vbus_detect.ready();
+            }
+            last_ready = ready;
+        }
+
+        embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+    }
+}
+
 #[embassy_executor::task]
 async fn blink_task(pin: Peri<'static, peripherals::P0_15>) -> ! {
     use embassy_nrf::gpio::{Level, Output, OutputDrive};
@@ -98,7 +192,10 @@ async fn blink_task(pin: Peri<'static, peripherals::P0_15>) -> ! {
     let mut led = Output::new(pin, Level::High, OutputDrive::Standard);
     let mut mode = 0; // 0 = Auto blink, 1 = Manual OFF, 2 = Manual ON
 
+    let mut count = 0;
     loop {
+        crate::log_msg!("Heartbeat: {}\r\n", count);
+        count += 1;
         match mode {
             0 => {
                 led.set_low(); // ON
@@ -153,10 +250,8 @@ async fn main(spawner: Spawner) {
     let p = embassy_nrf::init(config);
 
     // Set USBD interrupt priority to P2 to prevent SoftDevice conflicts (recovers USB transfer capability)
-    unsafe {
-        use embassy_nrf::interrupt::InterruptExt;
-        embassy_nrf::interrupt::USBD.set_priority(embassy_nrf::interrupt::Priority::P2);
-    }
+    use embassy_nrf::interrupt::InterruptExt;
+    embassy_nrf::interrupt::USBD.set_priority(embassy_nrf::interrupt::Priority::P2);
 
     // Configure LFCLK RC oscillator clock for SoftDevice (guarantees boot on all nice!nano variants)
     let sd_config = nrf_softdevice::Config {
@@ -215,10 +310,13 @@ async fn main(spawner: Spawner) {
         Timer::after(Duration::from_millis(5)).await;
     }
 
-    // Initialize software VBUS detect (always present when active)
+    // Initialize software VBUS detect (updated dynamically by vbus_detect_task)
     static VBUS_DETECT: StaticCell<SoftwareVbusDetect> = StaticCell::new();
     let vbus_detect: &'static SoftwareVbusDetect = &*VBUS_DETECT.init(SoftwareVbusDetect::new(true, true));
     let driver = Driver::new(p.USBD, Irqs, vbus_detect);
+
+    // Spawn VBUS detection task to dynamically update connection state
+    spawner.spawn(unwrap!(vbus_detect_task(vbus_detect)));
 
     // Configure the USB device stack
     let mut usb_config = Config::new(USB_VENDOR_ID, USB_PRODUCT_ID);
@@ -227,15 +325,19 @@ async fn main(spawner: Spawner) {
     usb_config.serial_number = Some(USB_SERIAL_NUMBER);
     usb_config.max_power = 100;
     usb_config.max_packet_size_0 = 64;
+    usb_config.device_class = 0xEF;
+    usb_config.device_sub_class = 0x02;
+    usb_config.device_protocol = 0x01;
+    usb_config.composite_with_iads = true;
 
     // Static cells for aligned descriptors and state buffers
     static DEVICE_DESCRIPTOR: StaticCell<AlignedBuffer<256>> = StaticCell::new();
-    static CONFIG_DESCRIPTOR: StaticCell<AlignedBuffer<256>> = StaticCell::new();
+    static CONFIG_DESCRIPTOR: StaticCell<AlignedBuffer<512>> = StaticCell::new();
     static BOS_DESCRIPTOR: StaticCell<AlignedBuffer<256>> = StaticCell::new();
     static CONTROL_BUF: StaticCell<AlignedBuffer<128>> = StaticCell::new();
 
     let device_desc = &mut DEVICE_DESCRIPTOR.init(AlignedBuffer { data: [0; 256] }).data;
-    let config_desc = &mut CONFIG_DESCRIPTOR.init(AlignedBuffer { data: [0; 256] }).data;
+    let config_desc = &mut CONFIG_DESCRIPTOR.init(AlignedBuffer { data: [0; 512] }).data;
     let bos_desc = &mut BOS_DESCRIPTOR.init(AlignedBuffer { data: [0; 256] }).data;
     let control_buf = &mut CONTROL_BUF.init(AlignedBuffer { data: [0; 128] }).data;
 
@@ -252,10 +354,23 @@ async fn main(spawner: Spawner) {
     static STATE: StaticCell<State> = StaticCell::new();
     let class = CdcNcmClass::new(&mut builder, STATE.init(State::new()), HOST_MAC_ADDR, 64);
 
+    // Initialize CDC-ACM class
+    static ACM_STATE: StaticCell<AcmState> = StaticCell::new();
+    let acm_class = CdcAcmClass::new(&mut builder, ACM_STATE.init(AcmState::new()), 64);
+
     let usb = builder.build();
+
+    // Split ACM class
+    let (acm_sender, acm_receiver) = acm_class.split();
 
     // Spawn USB device task
     spawner.spawn(unwrap!(usb_task(usb)));
+
+    // Spawn USB logger task
+    spawner.spawn(unwrap!(usb_logger_task(acm_sender)));
+
+    // Spawn USB receiver task
+    spawner.spawn(unwrap!(usb_receiver_task(acm_receiver)));
 
     // Split NCM class into net device and runner
     static NET_STATE: StaticCell<NetState<MTU, 4, 4>> = StaticCell::new();
@@ -296,6 +411,10 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(web::web_task(stack, flash_ref)));
 }
 
+const P0_PIN_CNF_15: *mut u32 = 0x5000073C as *mut u32;
+const P0_OUTCLR: *mut u32 = 0x5000050C as *mut u32;
+const P0_OUTSET: *mut u32 = 0x50000508 as *mut u32;
+
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // Write defmt message if possible
@@ -303,21 +422,19 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
     // Force P0.15 (LED) to output mode via direct register write
     unsafe {
-        let pin_cnf = 0x5000073C as *mut u32;
-        *pin_cnf = 1; // Dir: output
+        core::ptr::write_volatile(P0_PIN_CNF_15, 1); // Dir: output
     }
 
     loop {
         // Toggle LED fast for visual panic notification (100ms ON / 100ms OFF)
         unsafe {
-            let outclr = 0x5000050C as *mut u32;
-            *outclr = 1 << 15; // LED ON (Low)
+            core::ptr::write_volatile(P0_OUTCLR, 1 << 15); // LED ON (Low)
         }
         cortex_m::asm::delay(8_000_000);
         unsafe {
-            let outset = 0x50000508 as *mut u32;
-            *outset = 1 << 15; // LED OFF (High)
+            core::ptr::write_volatile(P0_OUTSET, 1 << 15); // LED OFF (High)
         }
         cortex_m::asm::delay(8_000_000);
     }
 }
+

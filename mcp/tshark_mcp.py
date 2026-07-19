@@ -46,6 +46,14 @@ def handle_tools_list(req_id):
                             "filter": {
                                 "type": "string",
                                 "description": "Display filter for tshark (e.g. 'bootp' for DHCP, 'tcp.port == 80', 'arp')."
+                            },
+                            "verbose": {
+                                "type": "boolean",
+                                "description": "Whether to output detailed multi-line packet parsing (-V flag in tshark)."
+                            },
+                            "format": {
+                                "type": "string",
+                                "description": "Alternative output format for tshark (e.g. 'json', 'ps', 'text', 'fields')."
                             }
                         },
                         "required": ["interface"]
@@ -67,6 +75,8 @@ def handle_tools_call(req_id, name, arguments):
     interface = arguments.get("interface")
     count = arguments.get("count", 10)
     display_filter = arguments.get("filter")
+    verbose = arguments.get("verbose", False)
+    output_format = arguments.get("format")
 
     cmd = [
         "tshark",
@@ -76,6 +86,12 @@ def handle_tools_call(req_id, name, arguments):
 
     if display_filter:
         cmd.extend(["-Y", display_filter])
+
+    if verbose:
+        cmd.append("-V")
+
+    if output_format:
+        cmd.extend(["-T", output_format])
 
     try:
         log_debug(f"Running command: {' '.join(cmd)}")
