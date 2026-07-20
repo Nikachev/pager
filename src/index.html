@@ -252,6 +252,37 @@
       <div class="ota-status" id="ota-status"></div>
     </div>
 
+    <!-- Bluetooth Keyboard Controller -->
+    <div class="ota-container">
+      <div class="ota-title">Bluetooth Keyboard Controller</div>
+      
+      <div class="profile-slots" style="display: flex; gap: 8px; margin-bottom: 12px; width: 100%;">
+        <button class="slot-btn" id="slot-0-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
+          <span style="font-weight: 600;">Profile 1</span>
+          <span class="slot-status" id="slot-0-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
+        </button>
+        <button class="slot-btn" id="slot-1-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
+          <span style="font-weight: 600;">Profile 2</span>
+          <span class="slot-status" id="slot-1-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
+        </button>
+        <button class="slot-btn" id="slot-2-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
+          <span style="font-weight: 600;">Profile 3</span>
+          <span class="slot-status" id="slot-2-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
+        </button>
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 12px; width: 100%;">
+        <button class="small-btn" id="pair-btn" style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); color: #818cf8; flex: 1;">Pair New Device</button>
+        <button class="small-btn" id="unpair-btn" style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); color: #f87171; flex: 1;" disabled>Delete Bond</button>
+      </div>
+
+      <div style="display: flex; gap: 8px; width: 100%;">
+        <input type="text" id="keyboard-input" placeholder="Type text to send..." style="flex: 1; padding: 12px; border-radius: 12px; border: 1px solid rgba(99, 102, 241, 0.2); background: rgba(15, 23, 42, 0.6); color: #f8fafc; font-size: 0.9rem; outline: none; transition: all 0.3s;">
+        <button class="upload-btn" id="type-btn" style="padding: 12px 20px; font-size: 0.9rem; border-radius: 12px; margin: 0; min-width: 90px;">Send</button>
+      </div>
+      <div id="keyboard-status" style="font-size: 0.8rem; color: #64748b; margin-top: 4px; text-align: left;">Loading state...</div>
+    </div>
+
     <!-- Device Controls -->
     <div class="ota-container">
       <div class="ota-title">Device Controls</div>
@@ -407,8 +438,134 @@
       logConsole.textContent = '';
     });
 
-    // Start logs polling automatically
+    // Bluetooth Keyboard State & Controls
+    let activeSlot = 0;
+
+    async function fetchKeyboardState() {
+      try {
+        const response = await fetch('/keyboard/state');
+        if (response.ok) {
+          const state = await response.json();
+          updateKeyboardUI(state);
+        }
+      } catch (e) {
+        console.error('Error fetching keyboard state:', e);
+      }
+    }
+
+    function updateKeyboardUI(state) {
+      const slots = state.slots;
+      const pairingMode = state.pairing_mode;
+      const statusDiv = document.getElementById('keyboard-status');
+
+      if (pairingMode) {
+        statusDiv.innerHTML = '<span style="color: #fbbf24; font-weight: 600;">Pairing Mode Active...</span> Search for "nice_nano" on your device.';
+      } else {
+        statusDiv.innerHTML = 'Keyboard ready. Select a profile to switch.';
+      }
+
+      slots.forEach((slot, i) => {
+        const btn = document.getElementById(`slot-${i}-btn`);
+        const statusSpan = document.getElementById(`slot-${i}-status`);
+
+        if (slot.active) {
+          activeSlot = i;
+          btn.style.borderColor = 'rgba(99, 102, 241, 0.6)';
+          btn.style.background = 'rgba(99, 102, 241, 0.1)';
+          btn.style.color = '#818cf8';
+          document.getElementById('unpair-btn').disabled = !slot.bonded;
+        } else {
+          btn.style.borderColor = 'rgba(255, 255, 255, 0.1)';
+          btn.style.background = 'rgba(255, 255, 255, 0.03)';
+          btn.style.color = '#cbd5e1';
+        }
+
+        if (slot.bonded) {
+          statusSpan.textContent = 'Bonded';
+          statusSpan.style.color = '#34d399';
+        } else {
+          statusSpan.textContent = 'Empty';
+          statusSpan.style.color = '#64748b';
+        }
+      });
+    }
+
+    for (let i = 0; i < 3; i++) {
+      document.getElementById(`slot-${i}-btn`).addEventListener('click', async () => {
+        try {
+          const response = await fetch(`/keyboard/switch?slot=${i}`, { method: 'POST' });
+          if (response.ok) {
+            fetchKeyboardState();
+          }
+        } catch (e) {
+          alert('Error switching slot: ' + e);
+        }
+      });
+    }
+
+    document.getElementById('pair-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch('/keyboard/pair', { method: 'POST' });
+        if (response.ok) {
+          fetchKeyboardState();
+        }
+      } catch (e) {
+        alert('Error enabling pairing mode: ' + e);
+      }
+    });
+
+    document.getElementById('unpair-btn').addEventListener('click', async () => {
+      if (confirm(`Are you sure you want to delete the bond for Profile ${activeSlot + 1}?`)) {
+        try {
+          const response = await fetch(`/keyboard/delete?slot=${activeSlot}`, { method: 'POST' });
+          if (response.ok) {
+            fetchKeyboardState();
+          }
+        } catch (e) {
+          alert('Error deleting bond: ' + e);
+        }
+      }
+    });
+
+    const typeBtn = document.getElementById('type-btn');
+    const kbInput = document.getElementById('keyboard-input');
+
+    async function sendText() {
+      const text = kbInput.value;
+      if (!text) return;
+
+      typeBtn.disabled = true;
+      try {
+        const response = await fetch('/keyboard/type', {
+          method: 'POST',
+          body: text,
+          headers: {
+            'Content-Type': 'text/plain'
+          }
+        });
+        if (response.ok) {
+          kbInput.value = '';
+        } else {
+          alert('Failed to send text: ' + response.statusText);
+        }
+      } catch (e) {
+        alert('Error sending text: ' + e);
+      } finally {
+        typeBtn.disabled = false;
+      }
+    }
+
+    typeBtn.addEventListener('click', sendText);
+    kbInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendText();
+      }
+    });
+
+    // Start logs and keyboard polling automatically
     startPolling();
+    setInterval(fetchKeyboardState, 2000);
+    fetchKeyboardState();
   </script>
 </body>
 </html>

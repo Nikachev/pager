@@ -25,7 +25,7 @@ embedded-storage = "0.3.1"
 embassy-sync = { version = "0.6.1", features = ["defmt"] }
 
 # BLE dependencies
-nrf-softdevice = { git = "https://github.com/embassy-rs/nrf-softdevice", features = ["defmt", "nrf52840", "s140", "ble-peripheral", "ble-gatt-server", "critical-section-impl"] }
+nrf-softdevice = { git = "https://github.com/embassy-rs/nrf-softdevice", features = ["defmt", "nrf52840", "s140", "ble-peripheral", "ble-gatt-server", "ble-sec", "critical-section-impl"] }
 nrf-softdevice-s140 = { git = "https://github.com/embassy-rs/nrf-softdevice" }
 embedded-storage-async = "0.4.1"
 

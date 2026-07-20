@@ -309,7 +309,6 @@ async fn blink_task(pin: Peri<'static, peripherals::P0_15>) -> ! {
 
     let mut count = 0;
     loop {
-        crate::log_msg!("Heartbeat: {}\r\n", count);
         count += 1;
         match mode {
             0 => {
@@ -407,7 +406,8 @@ async fn main(spawner: Spawner) {
     // Spawn BLE task
     static SERVER: StaticCell<ble::Server> = StaticCell::new();
     let server_ref = SERVER.init(server);
-    spawner.spawn(unwrap!(ble::ble_task(sd, server_ref)));
+    spawner.spawn(unwrap!(ble::ble_task(sd, server_ref, flash_mutex)));
+    spawner.spawn(unwrap!(ble::bond_persist_task(flash_mutex)));
 
     // Delay USB initialization to ensure the host registers a clean disconnect-reconnect event
     Timer::after(Duration::from_secs(2)).await;

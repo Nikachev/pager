@@ -2,6 +2,8 @@ use defmt::*;
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embedded_io_async::Write;
+use embedded_storage_async::nor_flash::NorFlash as _;
+use embedded_storage_async::nor_flash::ReadNorFlash as _;
 use embassy_time::{Duration, Timer};
 use crate::flash::copy_and_reset;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -9,6 +11,28 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 pub const MAX_BIN_SIZE: usize = 400 * 1024;
 pub const STAGING_START_ADDR: u32 = 0x8C000;
 pub const ACTIVE_START_ADDR: u32 = 0x27000;
+
+// Persistent BLE bonding keys are stored in the last flash page before the
+// bootloader config region. Must NOT overlap with staging (ends at 0xF0000).
+pub const BONDS_STORAGE_ADDR: u32 = 0xF0000;
+
+// A monotonically increasing boot counter, folded into the BLE address so
+// every reboot presents a new device identity to the host (avoids stale-bond
+// failures). Kept in its own flash page, well clear of staging/app/bootloader.
+pub const BOOT_COUNT_ADDR: u32 = 0xEE000;
+pub const BOOT_COUNT_PAGE: u32 = 0xEE000;
+
+pub async fn next_boot_count(flash: &mut nrf_softdevice::Flash) -> u32 {
+    let mut buf = [0u8; 4];
+    let _ = flash.read(BOOT_COUNT_ADDR, &mut buf).await;
+    let count = u32::from_le_bytes(buf);
+    let next = count.wrapping_add(1);
+    let _ = flash
+        .erase(BOOT_COUNT_PAGE, BOOT_COUNT_PAGE + 4096)
+        .await;
+    let _ = flash.write(BOOT_COUNT_ADDR, &next.to_le_bytes()).await;
+    next
+}
 
 const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
 
@@ -175,6 +199,142 @@ pub async fn web_task(
                 let _ = socket.flush().await;
                 socket.close();
             }
+        } else if starts_with(request_line, b"GET /keyboard/state") {
+            let mut response_body = heapless::String::<512>::new();
+            let state_str = crate::ble::KEYBOARD_STATE.lock(|state| {
+                let s = state.borrow();
+                let mut b = heapless::String::<256>::new();
+                let _ = b.push_str("{\"slots\":[");
+                for i in 0..3 {
+                    let active = s.active_slot == i;
+                    let bonded = s.bonds[i].is_some();
+                    let mut slot_str = heapless::String::<64>::new();
+                    let _ = core::fmt::write(&mut slot_str, format_args!(
+                        "{{\"id\":{},\"active\":{},\"bonded\":{}}}",
+                        i, active, bonded
+                    ));
+                    let _ = b.push_str(slot_str.as_str());
+                    if i < 2 {
+                        let _ = b.push_str(",");
+                    }
+                }
+                let mut end_str = heapless::String::<64>::new();
+                let _ = core::fmt::write(&mut end_str, format_args!(
+                    "],\"pairing_mode\":{}}}",
+                    s.pairing_mode
+                ));
+                let _ = b.push_str(end_str.as_str());
+                b
+            });
+            let _ = core::fmt::write(&mut response_body, format_args!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                state_str.len(),
+                state_str.as_str()
+            ));
+            let _ = socket.write_all(response_body.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
+        } else if starts_with(request_line, b"POST /keyboard/switch") {
+            let slot_idx = if let Some(_) = find_subsequence(request_line, b"slot=0") { Some(0) }
+                           else if let Some(_) = find_subsequence(request_line, b"slot=1") { Some(1) }
+                           else if let Some(_) = find_subsequence(request_line, b"slot=2") { Some(2) }
+                           else { None };
+
+            if let Some(slot) = slot_idx {
+                crate::ble::KEYBOARD_STATE.lock(|state| {
+                    let mut s = state.borrow_mut();
+                    s.active_slot = slot;
+                    s.pairing_mode = false;
+                });
+                let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::RestartAdvertising);
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let _ = socket.write_all(response.as_bytes()).await;
+            } else {
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nMissing slot";
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
+        } else if starts_with(request_line, b"POST /keyboard/pair") {
+            crate::ble::KEYBOARD_STATE.lock(|state| {
+                let mut s = state.borrow_mut();
+                s.pairing_mode = true;
+            });
+            let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::Disconnect);
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
+        } else if starts_with(request_line, b"POST /keyboard/delete") {
+            let slot_idx = if let Some(_) = find_subsequence(request_line, b"slot=0") { Some(0) }
+                           else if let Some(_) = find_subsequence(request_line, b"slot=1") { Some(1) }
+                           else if let Some(_) = find_subsequence(request_line, b"slot=2") { Some(2) }
+                           else { None };
+
+            if let Some(slot) = slot_idx {
+                let is_active = crate::ble::KEYBOARD_STATE.lock(|state| {
+                    let mut s = state.borrow_mut();
+                    s.bonds[slot] = None;
+                    s.active_slot == slot
+                });
+                // Erase the bond from flash so it stays in sync with the host.
+                let mut flash = flash_mutex.lock().await;
+                crate::ble::erase_bond_slot(&mut flash, slot).await;
+                drop(flash);
+                if is_active {
+                    let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::RestartAdvertising);
+                }
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let _ = socket.write_all(response.as_bytes()).await;
+            } else {
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nMissing slot";
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
+        } else if starts_with(request_line, b"POST /keyboard/type") {
+            let content_len = parse_content_length(request_line).unwrap_or(0);
+            if content_len > 0 && content_len <= 128 {
+                let body_start = headers_end + 4;
+                let initial_body_len = read_len - body_start;
+                let mut type_buf = [0u8; 128];
+                let mut total_read = 0;
+
+                if initial_body_len > 0 {
+                    let bytes_to_process = core::cmp::min(initial_body_len, content_len);
+                    type_buf[..bytes_to_process].copy_from_slice(&buf[body_start..body_start + bytes_to_process]);
+                    total_read += bytes_to_process;
+                }
+
+                while total_read < content_len {
+                    let to_read = core::cmp::min(type_buf.len() - total_read, content_len - total_read);
+                    match socket.read(&mut type_buf[total_read..total_read + to_read]).await {
+                        Ok(0) => break,
+                        Ok(n) => total_read += n,
+                        Err(_) => break,
+                    }
+                }
+
+                if total_read == content_len {
+                    if let Ok(s) = core::str::from_utf8(&type_buf[..total_read]) {
+                        if let Ok(heap_str) = heapless::String::<128>::try_from(s) {
+                            let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::TypeString(heap_str));
+                        }
+                    }
+                }
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let _ = socket.write_all(response.as_bytes()).await;
+            } else {
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nInvalid size";
+                let _ = socket.write_all(response.as_bytes()).await;
+            }
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
         } else if starts_with(request_line, b"POST /bootloader") {
             crate::log_msg!("Rebooting to Bootloader (UF2) via HTTP...");
             let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";

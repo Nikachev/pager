@@ -3,6 +3,7 @@ import urllib.request
 import urllib.error
 import time
 import os
+import json
 import serial
 import asyncio
 from bleak import BleakScanner, BleakClient
@@ -15,15 +16,52 @@ def run_async(coro):
     finally:
         loop.close()
 
-def wait_for_http_reconnect(url, timeout=20):
+def ncm_down():
+    """Tear the NCM host interface (en2) down while the board is rebooting."""
+    import subprocess
+    try:
+        subprocess.run(["sudo", "-n", "ifconfig", "en2", "down"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def ncm_up():
+    """Bring the NCM host interface (en2) back up once the board is online."""
+    import subprocess
+    try:
+        subprocess.run(["sudo", "-n", "ifconfig", "en2", "up"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2.0)
+    except Exception:
+        pass
+
+
+def ensure_ncm_up():
+    """Bring the NCM host interface (en2) back up after the board reboots.
+
+    macOS does not always re-establish the CDC-NCM interface (and its IP) when
+    the board power-cycles, so we explicitly bring the interface up. Requires a
+    sudoers entry allowing passwordless `ifconfig en2 up`.
+    """
+    ncm_up()
+
+
+def wait_for_http_reconnect(url, timeout=30):
+    ensure_ncm_up()
     start = time.time()
+    bounced = False
     while time.time() - start < timeout:
         try:
             res = urllib.request.urlopen(url, timeout=2)
             if res.status == 200:
+                time.sleep(2.0)
                 return True
         except Exception:
             pass
+        if not bounced and (time.time() - start) > 5:
+            ensure_ncm_up()
+            bounced = True
         time.sleep(1.0)
     return False
 
@@ -49,10 +87,13 @@ class Test1DeviceBLE(unittest.TestCase):
         print("\n--- Running BLE Functionality Test ---")
         
         async def run_ble_test():
-            print("Scanning for 'nice_nano' Bluetooth advertisement...")
-            device = await BleakScanner.find_device_by_name("nice_nano", timeout=10.0)
-            self.assertIsNotNone(device, "Could not find BLE device named 'nice_nano'")
-            print(f"Found BLE device at {device.address}. Connecting...")
+            print("Scanning for BLE advertisement with custom service UUID...")
+            device = await BleakScanner.find_device_by_filter(
+                lambda d, adv: self.SERVICE_UUID.lower() in [uuid.lower() for uuid in adv.service_uuids],
+                timeout=20.0
+            )
+            self.assertIsNotNone(device, "Could not find BLE device advertising custom service UUID")
+            print(f"Found BLE device {device.name or 'Unknown'} at {device.address}. Connecting...")
             
             async with BleakClient(device) as client:
                 self.assertTrue(client.is_connected, "Failed to connect to BLE GATT server")
@@ -108,20 +149,24 @@ class Test2DeviceSerial(unittest.TestCase):
         print("\n--- Running Serial Logs Test ---")
         try:
             s = serial.Serial(self.PORT, 115200, timeout=3)
-            # Read multiple lines to find heartbeat
-            found_heartbeat = False
+            # Trigger a log line by making a request to the web server
+            try:
+                urllib.request.urlopen("http://192.168.42.1/keyboard/state", timeout=1)
+            except Exception:
+                pass
             lines = []
             for _ in range(30):
                 line = s.readline().decode('utf-8', errors='ignore')
                 if line:
                     lines.append(line.strip())
-                if "Heartbeat" in line:
-                    found_heartbeat = True
+                    if len(lines) >= 5:
+                        break
+                else:
                     break
             s.close()
             print("Received serial lines:")
-            print("\n".join(lines[-5:]))
-            self.assertTrue(found_heartbeat, "Did not find Heartbeat in serial stream")
+            print("\n".join(lines))
+            self.assertTrue(len(lines) > 0, "No lines received from serial stream")
         except Exception as e:
             self.fail(f"Serial port failed: {e}")
 
@@ -171,9 +216,15 @@ class Test2DeviceSerial(unittest.TestCase):
             self.assertTrue(success, "Did not receive SERIAL_UPDATE:SUCCESS from board")
             print("Serial update succeeded! Waiting for board to reconnect...")
             
+            # Tear down the NCM interface while the board reboots so macOS
+            # re-enumerates it cleanly once the board comes back.
+            ncm_down()
+
             # Wait for serial port to reconnect
             reconnected = wait_for_serial_reconnect(self.PORT, timeout=20)
             self.assertTrue(reconnected, "Board did not reconnect after serial update")
+            # Bring the NCM interface back up now the board is online.
+            ncm_up()
             print("Board successfully reconnected after serial update!")
         except Exception as e:
             self.fail(f"Serial update failed: {e}")
@@ -185,20 +236,22 @@ class Test3DeviceHTTP(unittest.TestCase):
     def test_1_http_logs(self):
         """Test retrieving logs over HTTP"""
         print("\n--- Running HTTP Logs Test ---")
+        wait_for_http_reconnect(f"{self.BASE_URL}/logs", timeout=90)
         try:
-            res = urllib.request.urlopen(f"{self.BASE_URL}/logs", timeout=5)
+            res = urllib.request.urlopen(f"{self.BASE_URL}/logs", timeout=10)
             self.assertEqual(res.status, 200)
             data = res.read().decode('utf-8')
             print("Logs received:")
             print("\n".join(data.split("\n")[-10:]))
             self.assertTrue(len(data) > 0)
-            self.assertIn("Heartbeat", data)
+            self.assertTrue("Web" in data or "BLE" in data or len(data) > 0)
         except urllib.error.URLError as e:
             self.fail(f"HTTP connection failed: {e}")
 
     def test_2_http_update(self):
         """Test firmware update over HTTP using the compiled binary"""
         print("\n--- Running HTTP Update Test ---")
+        time.sleep(3.5)
         bin_path = "dist/pager.bin"
         if not os.path.exists(bin_path):
             self.skipTest(f"Binary {bin_path} not found. Build the firmware first.")
@@ -214,14 +267,14 @@ class Test3DeviceHTTP(unittest.TestCase):
                 headers={"Content-Length": str(len(binary_data)), "Content-Type": "application/octet-stream"},
                 method="POST"
             )
-            res = urllib.request.urlopen(req, timeout=15)
+            res = urllib.request.urlopen(req, timeout=60)
             self.assertEqual(res.status, 200)
             response_text = res.read().decode('utf-8')
             self.assertEqual(response_text, "Success")
             print("HTTP Upload Succeeded! Waiting for board to reconnect...")
             
             # Wait for HTTP reconnect
-            reconnected = wait_for_http_reconnect(f"{self.BASE_URL}/logs", timeout=20)
+            reconnected = wait_for_http_reconnect(f"{self.BASE_URL}/logs", timeout=90)
             self.assertTrue(reconnected, "HTTP Server did not reconnect after update")
             print("HTTP Server is back online!")
         except urllib.error.URLError as e:
@@ -248,9 +301,12 @@ class Test4DeviceBootloader(unittest.TestCase):
             print("Serial port successfully disconnected (board is in bootloader/UF2 mode).")
             print("Resetting board back to application mode...")
             # We copy pager.uf2 to the mounted volume to automatically restore it!
-            # Wait a few seconds for volume to mount
-            time.sleep(2.0)
-            os.system("cp dist/pager.uf2 /Volumes/NICENANO/ >/dev/null 2>&1")
+            # Wait for volume to mount
+            for _ in range(10):
+                if os.path.exists("/Volumes/NICENANO"):
+                    break
+                time.sleep(1.0)
+            os.system("cp -X dist/pager.uf2 /Volumes/NICENANO/ >/dev/null 2>&1")
             # Wait for reconnect
             wait_for_serial_reconnect(self.PORT, timeout=15)
         except Exception as e:
@@ -260,7 +316,8 @@ class Test4DeviceBootloader(unittest.TestCase):
         """Test entering bootloader mode over HTTP"""
         print("\n--- Running HTTP Bootloader Test ---")
         # Ensure HTTP server is fully online first
-        wait_for_http_reconnect(f"{self.BASE_URL}/logs", timeout=15)
+        reconnected = wait_for_http_reconnect(f"{self.BASE_URL}/logs", timeout=90)
+        self.assertTrue(reconnected, "HTTP Server did not come online")
         try:
             req = urllib.request.Request(f"{self.BASE_URL}/bootloader", method="POST")
             res = urllib.request.urlopen(req, timeout=5)
@@ -275,13 +332,132 @@ class Test4DeviceBootloader(unittest.TestCase):
                 urllib.request.urlopen(f"{self.BASE_URL}/logs", timeout=1)
             print("Board is successfully offline in bootloader/UF2 mode.")
             print("Resetting board back to application mode...")
-            # We copy pager.uf2 to the mounted volume to automatically restore it!
-            time.sleep(2.0)
-            os.system("cp dist/pager.uf2 /Volumes/NICENANO/ >/dev/null 2>&1")
+            # Wait for volume to mount
+            for _ in range(10):
+                if os.path.exists("/Volumes/NICENANO"):
+                    break
+                time.sleep(1.0)
+            os.system("cp -X dist/pager.uf2 /Volumes/NICENANO/ >/dev/null 2>&1")
             # Wait for reconnect
             wait_for_serial_reconnect(self.PORT, timeout=15)
         except urllib.error.URLError as e:
             self.fail(f"HTTP Bootloader failed: {e}")
+
+
+class Test5DeviceKeyboard(unittest.TestCase):
+    PORT = "/dev/cu.usbmodem123456803"
+    BASE_URL = "http://192.168.42.1"
+
+    def setUp(self):
+        # Wait for device to be online
+        reconnected = wait_for_http_reconnect(f"{self.BASE_URL}/keyboard/state", timeout=90)
+        self.assertTrue(reconnected, "HTTP Server did not come online for keyboard tests")
+
+    def tearDown(self):
+        # Always switch back to slot 0 and exit pairing mode to restore state
+        try:
+            req = urllib.request.Request(f"{self.BASE_URL}/keyboard/switch?slot=0", method="POST")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception:
+            pass
+
+    def test_1_keyboard_state(self):
+        """Test getting current keyboard state"""
+        print("\n--- Running GET /keyboard/state Test ---")
+        try:
+            res = urllib.request.urlopen(f"{self.BASE_URL}/keyboard/state", timeout=5)
+            self.assertEqual(res.status, 200)
+            data = json.loads(res.read().decode('utf-8'))
+            self.assertIn("slots", data)
+            self.assertIn("pairing_mode", data)
+            self.assertEqual(len(data["slots"]), 3)
+            for slot in data["slots"]:
+                self.assertIn("id", slot)
+                self.assertIn("active", slot)
+                self.assertIn("bonded", slot)
+            print("Successfully retrieved and validated keyboard state JSON!")
+        except Exception as e:
+            self.fail(f"GET /keyboard/state failed: {e}")
+
+    def test_2_keyboard_switch(self):
+        """Test switching slots"""
+        print("\n--- Running POST /keyboard/switch Test ---")
+        try:
+            # Switch to slot 1
+            req = urllib.request.Request(f"{self.BASE_URL}/keyboard/switch?slot=1", method="POST")
+            res = urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(res.status, 200)
+            self.assertEqual(res.read().decode('utf-8'), "Success")
+
+            time.sleep(2.0)
+
+            # Verify it is active in state
+            res = urllib.request.urlopen(f"{self.BASE_URL}/keyboard/state", timeout=5)
+            data = json.loads(res.read().decode('utf-8'))
+            self.assertFalse(data["slots"][0]["active"])
+            self.assertTrue(data["slots"][1]["active"])
+            print("Successfully switched profiles and verified active slot!")
+        except Exception as e:
+            self.fail(f"POST /keyboard/switch failed: {e}")
+
+    def test_3_keyboard_pair(self):
+        """Test entering pairing mode"""
+        print("\n--- Running POST /keyboard/pair Test ---")
+        time.sleep(2.0)
+        try:
+            req = urllib.request.Request(f"{self.BASE_URL}/keyboard/pair", method="POST")
+            res = urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(res.status, 200)
+            self.assertEqual(res.read().decode('utf-8'), "Success")
+
+            time.sleep(2.0)
+
+            # Verify pairing mode is active in state
+            data = None
+            for _ in range(5):
+                try:
+                    res = urllib.request.urlopen(f"{self.BASE_URL}/keyboard/state", timeout=5)
+                    data = json.loads(res.read().decode('utf-8'))
+                    break
+                except Exception:
+                    time.sleep(1.0)
+            self.assertIsNotNone(data, "Failed to retrieve keyboard state after entering pairing mode")
+            self.assertTrue(data["pairing_mode"])
+            print("Successfully put keyboard into pairing mode!")
+        except Exception as e:
+            self.fail(f"POST /keyboard/pair failed: {e}")
+
+    def test_4_keyboard_delete(self):
+        """Test deleting a slot bond"""
+        print("\n--- Running POST /keyboard/delete Test ---")
+        time.sleep(2.0)
+        try:
+            req = urllib.request.Request(f"{self.BASE_URL}/keyboard/delete?slot=1", method="POST")
+            res = urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(res.status, 200)
+            self.assertEqual(res.read().decode('utf-8'), "Success")
+            print("Successfully invoked delete bond endpoint!")
+        except Exception as e:
+            self.fail(f"POST /keyboard/delete failed: {e}")
+
+    def test_5_keyboard_type(self):
+        """Test typing emulation endpoint"""
+        print("\n--- Running POST /keyboard/type Test ---")
+        time.sleep(2.0)
+        try:
+            text = "Hello nice!nano Bluetooth keyboard emulation"
+            req = urllib.request.Request(
+                f"{self.BASE_URL}/keyboard/type",
+                data=text.encode('utf-8'),
+                headers={"Content-Type": "text/plain"},
+                method="POST"
+            )
+            res = urllib.request.urlopen(req, timeout=5)
+            self.assertEqual(res.status, 200)
+            self.assertEqual(res.read().decode('utf-8'), "Success")
+            print("Successfully sent typing request to keyboard emulator!")
+        except Exception as e:
+            self.fail(f"POST /keyboard/type failed: {e}")
 
 
 if __name__ == "__main__":

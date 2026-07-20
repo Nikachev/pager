@@ -85,6 +85,28 @@ If SoftDevice is already present:
 3. Select your device `nice_nano` in the pairing popup.
 4. Once connected, toggle the LED switch or monitor the incoming heartbeat notifications on the live terminal.
 
+## ⌨️ Bluetooth Keyboard Emulation
+
+This firmware adds full BLE HID Keyboard emulation capabilities, supporting profile management, pairing control, and text typing emulation via HTTP REST endpoints and the Web Portal.
+
+### Profile (Slot) Management
+The board maintains 3 separate profile slots in RAM to store bonded devices. You can switch between active slots, trigger pairing mode, or delete bonds dynamically.
+
+*   **GET `/keyboard/state`**: Retrieves the current slot profiles and pairing status.
+    *   **Response**: `{"slots":[{"id":0,"active":true,"bonded":false}, ...],"pairing_mode":false}`
+*   **POST `/keyboard/switch?slot=<id>`**: Switches the active profile slot (`0`, `1`, or `2`) and restarts BLE advertising.
+*   **POST `/keyboard/pair`**: Puts the active slot into pairing mode to allow new devices to discover and bond with the keyboard.
+*   **POST `/keyboard/delete?slot=<id>`**: Deletes the security bond for the specified slot.
+*   **POST `/keyboard/type`**: Emulates key presses as if typed on a physical keyboard.
+    *   **Body**: Raw text to be typed (up to 128 bytes of UTF-8 text).
+    *   **Translation**: Automatically maps ASCII characters to HID standard codes and key modifiers.
+
+### Web Interface Control
+The built-in web portal at `http://192.168.42.1/` includes a glassmorphic **Bluetooth Keyboard Controller** panel that allows you to:
+1.  Monitor connection/bond status of all 3 slots in real-time.
+2.  Switch profiles and initiate pairing for the active slot.
+3.  Type text in a text box and send it to the board, which instantly replicates the typing action on the connected Bluetooth host.
+
 ---
 
 ## 💻 Device Management (HTTP & Serial)
