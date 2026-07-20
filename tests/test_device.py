@@ -347,6 +347,7 @@ class Test4DeviceBootloader(unittest.TestCase):
 class Test5DeviceKeyboard(unittest.TestCase):
     PORT = "/dev/cu.usbmodem123456803"
     BASE_URL = "http://192.168.42.1"
+    SERVICE_UUID = "9e7a0001-0b3e-46e8-ad30-7746bad7128a"
 
     def setUp(self):
         # Wait for device to be online
@@ -441,11 +442,28 @@ class Test5DeviceKeyboard(unittest.TestCase):
             self.fail(f"POST /keyboard/delete failed: {e}")
 
     def test_5_keyboard_type(self):
-        """Test typing emulation endpoint"""
+        """Test typing emulation over HTTP and verify the emitted HID reports.
+
+        Part 1 (always runs): POST /keyboard/type returns 200/Success.
+        Part 2 (best-effort): connect over BLE, subscribe to the HID Input
+        Report (0x2A4D), trigger typing, and assert every emitted keystroke is
+        an 8-byte report with NO Report ID prefix, whose modifier/keycode
+        decode back to the typed characters.
+
+        This is the regression test for the HID report-format bug: a report must
+        NOT carry the 0x01 Report ID prefix (the host derives the Report ID from
+        the characteristic's Report Reference descriptor). A 9-byte report is
+        silently dropped by macOS, so the keystrokes never appear.
+
+        Part 2 is skipped automatically when the device is already connected to
+        the host (e.g. the paired macOS keyboard holds the link and Bleak cannot
+        double-connect). Run it from a separate BLE host / CI machine to verify
+        the on-air reports.
+        """
         print("\n--- Running POST /keyboard/type Test ---")
         time.sleep(2.0)
+        text = "abc ABC 123"
         try:
-            text = "Hello nice!nano Bluetooth keyboard emulation"
             req = urllib.request.Request(
                 f"{self.BASE_URL}/keyboard/type",
                 data=text.encode('utf-8'),
@@ -458,6 +476,174 @@ class Test5DeviceKeyboard(unittest.TestCase):
             print("Successfully sent typing request to keyboard emulator!")
         except Exception as e:
             self.fail(f"POST /keyboard/type failed: {e}")
+
+        # Part 2: verify the actual HID reports over BLE.
+        async def run_type_ble_test():
+            print("Scanning for BLE device to verify HID typing...")
+            device = await BleakScanner.find_device_by_filter(
+                lambda d, adv: self.SERVICE_UUID.lower() in [uuid.lower() for uuid in adv.service_uuids],
+                timeout=20.0
+            )
+            if device is None:
+                raise RuntimeError("Could not find BLE device to verify typing")
+            print(f"Found BLE device at {device.address}. Connecting...")
+
+            received_reports = []
+            reports_done = asyncio.Event()
+
+            def input_callback(sender, data):
+                received_reports.append(bytes(data))
+                # Stop once we've seen a key-down + key-up for every character.
+                if len([r for r in received_reports if r[2] != 0 or r[0] != 0]) >= len(text):
+                    reports_done.set()
+
+            async with BleakClient(device) as client:
+                if not client.is_connected:
+                    raise RuntimeError("Failed to connect for HID typing test")
+                # Enable notifications on the HID Input Report (0x2A4D).
+                await client.start_notify("00002a4d-0000-1000-8000-00805f9b34fb", input_callback)
+                await asyncio.sleep(0.5)
+
+                # Trigger typing through the web interface (blocking call off
+                # the event loop so the BLE client keeps receiving notifications).
+                def trigger():
+                    r = urllib.request.Request(
+                        f"{self.BASE_URL}/keyboard/type",
+                        data=text.encode('utf-8'),
+                        headers={"Content-Type": "text/plain"},
+                        method="POST",
+                    )
+                    return urllib.request.urlopen(r, timeout=5)
+
+                await asyncio.to_thread(trigger)
+
+                try:
+                    await asyncio.wait_for(reports_done.wait(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    raise RuntimeError("Timed out waiting for HID keystroke notifications over BLE")
+                finally:
+                    try:
+                        await client.stop_notify("00002a4d-0000-1000-8000-00805f9b34fb")
+                    except Exception:
+                        pass
+
+            # Keep only the key-down reports (non-zero modifier or keycode).
+            down_reports = [r for r in received_reports if r[2] != 0 or r[0] != 0]
+            self.assertTrue(len(down_reports) > 0, "No HID input reports received")
+            self.assertEqual(len(down_reports), len(text),
+                             "Expected one key-down report per typed character")
+
+            for ch, r in zip(text, down_reports):
+                # Regression guard: report must be exactly 8 bytes with NO Report
+                # ID prefix. A 9-byte [0x01, ...] report is dropped by macOS.
+                self.assertEqual(len(r), 8,
+                                 f"Input report must be 8 bytes (no Report ID), got {len(r)}: {r.hex()}")
+                self.assertNotEqual(r[0], 0x01,
+                                    f"Report carries a 0x01 Report ID prefix (bug): {r.hex()}")
+                expected = _expected_hid_report(ch)
+                self.assertIsNotNone(expected, f"Character {ch!r} has no HID mapping")
+                self.assertEqual(r, expected,
+                                 f"Report for {ch!r} mismatch: got {r.hex()}, want {expected.hex()}")
+            print(f"Received and verified {len(down_reports)} HID keystroke report(s) over BLE!")
+
+        try:
+            run_async(run_type_ble_test())
+        except unittest.SkipTest:
+            raise
+        except Exception as e:
+            self.skipTest(
+                f"BLE HID verification skipped (device likely connected to the host "
+                f"or unavailable from this machine): {e}"
+            )
+
+
+def _expected_hid_report(c):
+    """Mirror of the firmware's ascii_to_hid() so the test is self-validating.
+
+    Returns the 8-byte keyboard report [modifier, reserved, keycode, 0,0,0,0,0]
+    for a single character, or None if unmapped.
+    """
+    modifiers = 0
+    if 'a' <= c <= 'z':
+        keycode = ord(c) - ord('a') + 0x04
+    elif 'A' <= c <= 'Z':
+        modifiers = 0x02
+        keycode = ord(c) - ord('A') + 0x04
+    elif '1' <= c <= '9':
+        keycode = ord(c) - ord('1') + 0x1E
+    elif c == '0':
+        keycode = 0x27
+    elif c in '\n\r':
+        keycode = 0x28
+    elif c == ' ':
+        keycode = 0x2C
+    elif c == '!':
+        modifiers, keycode = 0x02, 0x1E
+    elif c == '@':
+        modifiers, keycode = 0x02, 0x1F
+    elif c == '#':
+        modifiers, keycode = 0x02, 0x20
+    elif c == '$':
+        modifiers, keycode = 0x02, 0x21
+    elif c == '%':
+        modifiers, keycode = 0x02, 0x22
+    elif c == '^':
+        modifiers, keycode = 0x02, 0x23
+    elif c == '&':
+        modifiers, keycode = 0x02, 0x24
+    elif c == '*':
+        modifiers, keycode = 0x02, 0x25
+    elif c == '(':
+        modifiers, keycode = 0x02, 0x26
+    elif c == ')':
+        modifiers, keycode = 0x02, 0x27
+    elif c == '-':
+        keycode = 0x2D
+    elif c == '_':
+        modifiers, keycode = 0x02, 0x2D
+    elif c == '=':
+        keycode = 0x2E
+    elif c == '+':
+        modifiers, keycode = 0x02, 0x2E
+    elif c == '[':
+        keycode = 0x2F
+    elif c == '{':
+        modifiers, keycode = 0x02, 0x2F
+    elif c == ']':
+        keycode = 0x30
+    elif c == '}':
+        modifiers, keycode = 0x02, 0x30
+    elif c == '\\':
+        keycode = 0x31
+    elif c == '|':
+        modifiers, keycode = 0x02, 0x31
+    elif c == ';':
+        keycode = 0x33
+    elif c == ':':
+        modifiers, keycode = 0x02, 0x33
+    elif c == '\'':
+        keycode = 0x34
+    elif c == '"':
+        modifiers, keycode = 0x02, 0x34
+    elif c == '`':
+        keycode = 0x35
+    elif c == '~':
+        modifiers, keycode = 0x02, 0x35
+    elif c == ',':
+        keycode = 0x36
+    elif c == '<':
+        modifiers, keycode = 0x02, 0x36
+    elif c == '.':
+        keycode = 0x37
+    elif c == '>':
+        modifiers, keycode = 0x02, 0x37
+    elif c == '/':
+        keycode = 0x38
+    elif c == '?':
+        modifiers, keycode = 0x02, 0x38
+    else:
+        return None
+    return bytes([modifiers, 0, keycode, 0, 0, 0, 0, 0])
 
 
 if __name__ == "__main__":

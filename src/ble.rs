@@ -103,7 +103,15 @@ const HID_REPORT_DESCRIPTOR: &[u8] = hid!(
 pub struct HidService {
     pub input_report_value_handle: u16,
     pub input_report_cccd_handle: u16,
+    pub boot_input_report_value_handle: u16,
+    pub boot_input_report_cccd_handle: u16,
+    pub protocol_mode_value_handle: u16,
 }
+
+// HID protocol mode negotiated by the host: 0 = Boot Protocol, 1 = Report Protocol.
+// macOS negotiates this via the HID Protocol Mode characteristic (0x2A4E); without
+// it the host may not route the keyboard's input reports as keystrokes.
+pub static PROTOCOL_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(1);
 
 impl HidService {
     pub fn new(sd: &mut Softdevice) -> Result<Self, RegisterError> {
@@ -123,7 +131,22 @@ impl HidService {
             Metadata::new(Properties::new().read()),
         )?.build();
 
-        // 3. Input Report (0x2A4D)
+        // 3. HID Control Point (0x2A4C) - suspend/resume (write only)
+        sb.add_characteristic(
+            Uuid::new_16(0x2a4c),
+            Attribute::new(&[0u8; 1]),
+            Metadata::new(Properties::new().write()),
+        )?.build();
+
+        // 4. HID Protocol Mode (0x2A4E) - read/write, default Report Protocol
+        let pm = sb.add_characteristic(
+            Uuid::new_16(0x2a4e),
+            Attribute::new(&[1u8]),
+            Metadata::new(Properties::new().read().write()),
+        )?;
+        let protocol_mode_value_handle = pm.build().value_handle;
+
+        // 5. Input Report (0x2A4D) - Report Protocol (Report ID 0x01)
         let mut char_b = sb.add_characteristic(
             Uuid::new_16(0x2a4d),
             Attribute::new(&[0u8; 8]).security(SecurityMode::JustWorks),
@@ -135,16 +158,42 @@ impl HidService {
         )?;
         let handles = char_b.build();
 
+        // 6. Boot Keyboard Input Report (0x2A22) - Boot Protocol (8 bytes, no Report ID)
+        let mut boot_b = sb.add_characteristic(
+            Uuid::new_16(0x2a22),
+            Attribute::new(&[0u8; 8]).security(SecurityMode::JustWorks),
+            Metadata::new(Properties::new().read().write().notify()).security(SecurityMode::JustWorks),
+        )?;
+        boot_b.add_descriptor(
+            Uuid::new_16(0x2908),
+            Attribute::new(&[0u8, 1u8]),
+        )?;
+        let boot_handles = boot_b.build();
+
         sb.build();
 
         Ok(Self {
             input_report_value_handle: handles.value_handle,
             input_report_cccd_handle: handles.cccd_handle,
+            boot_input_report_value_handle: boot_handles.value_handle,
+            boot_input_report_cccd_handle: boot_handles.cccd_handle,
+            protocol_mode_value_handle,
         })
     }
 
-    pub fn input_report_notify(&self, conn: &Connection, report: &[u8; 8]) -> Result<(), gatt_server::NotifyValueError> {
-        gatt_server::notify_value(conn, self.input_report_value_handle, report)
+    // Send a single keystroke report. The report is the 8-byte keyboard report
+    // (modifier, reserved, 6 keycodes). Over HID-over-GATT the Report Reference
+    // descriptor on the Input Report characteristic already identifies the
+    // Report ID, so the characteristic VALUE must be the raw report data with NO
+    // Report ID prefix (matching the nRF HID keyboard reference). This holds for
+    // both Report Protocol (0x2A4D) and Boot Protocol (0x2A22).
+    pub fn send_key(&self, conn: &Connection, report: &[u8; 8]) -> Result<(), gatt_server::NotifyValueError> {
+        let mode = PROTOCOL_MODE.load(core::sync::atomic::Ordering::Relaxed);
+        if mode == 0 {
+            gatt_server::notify_value(conn, self.boot_input_report_value_handle, report)
+        } else {
+            gatt_server::notify_value(conn, self.input_report_value_handle, report)
+        }
     }
 }
 
@@ -188,6 +237,16 @@ impl gatt_server::Server for Server {
             let notifications = (data[0] & 0x01) != 0;
             return Some(ServerEvent::Hid(HidServiceEvent::InputReportCccdWrite { notifications }));
         }
+        if handle == self.hid.boot_input_report_cccd_handle && !data.is_empty() {
+            // Boot Keyboard Input Report notifications toggled; accepted.
+            return None;
+        }
+        if handle == self.hid.protocol_mode_value_handle && !data.is_empty() {
+            PROTOCOL_MODE.store(data[0], core::sync::atomic::Ordering::Relaxed);
+            crate::log_msg!("BLE: HID protocol mode set to {}", data[0]);
+            return None;
+        }
+        // HID Control Point (suspend/resume) and any other writes are accepted.
         None
     }
 }
@@ -657,9 +716,15 @@ pub async fn ble_task(
             loop {
                 embassy_time::Timer::after(embassy_time::Duration::from_secs(5)).await;
                 val = val.wrapping_add(1);
+                // Status notifications are a best-effort heartbeat on the
+                // CustomService status characteristic. The HID host (macOS)
+                // does not subscribe to this CCCD, so status_notify returns
+                // Err(NotEnabled). That is expected and must NOT break this
+                // task: breaking would complete the `select` that also drives
+                // gatt_task/cmd_task, cancelling the GATT server and tearing
+                // down the live BLE link (the flapping bug). Just skip and retry.
                 if let Err(e) = server_ref.custom.status_notify(conn_ref, &val) {
-                    warn!("BLE notify error: {:?}", e);
-                    break;
+                    trace!("BLE status notify skipped (not subscribed): {:?}", e);
                 }
             }
         };
@@ -682,7 +747,8 @@ pub async fn ble_task(
                 },
             })
             .await;
-            crate::log_msg!("BLE connection closed; error: {:?}", e);
+            let reason = conn_ref.disconnect_reason();
+            crate::log_msg!("BLE connection closed; error: {:?}, reason: {:?}", e, reason);
         };
 
         let cmd_task = async {
@@ -701,7 +767,7 @@ pub async fn ble_task(
                                 let mut report = [0u8; 8];
                                 report[0] = mods;
                                 report[2] = keycode;
-                                if let Err(e) = server_ref.hid.input_report_notify(conn_ref, &report) {
+                                if let Err(e) = server_ref.hid.send_key(conn_ref, &report) {
                                     warn!("BLE key down notify error: {:?}", e);
                                     break;
                                 }
@@ -709,7 +775,7 @@ pub async fn ble_task(
 
                                 report[0] = 0;
                                 report[2] = 0;
-                                if let Err(e) = server_ref.hid.input_report_notify(conn_ref, &report) {
+                                if let Err(e) = server_ref.hid.send_key(conn_ref, &report) {
                                     warn!("BLE key up notify error: {:?}", e);
                                     break;
                                 }

@@ -26,10 +26,10 @@ use embedded_io_async::Write;
 
 pub static LED_MODE: Signal<ThreadModeRawMutex, u8> = Signal::new();
 
-pub static LOG_CHANNEL: embassy_sync::channel::Channel<ThreadModeRawMutex, heapless::String<128>, 32> = embassy_sync::channel::Channel::new();
+pub static LOG_CHANNEL: embassy_sync::channel::Channel<ThreadModeRawMutex, heapless::String<128>, 128> = embassy_sync::channel::Channel::new();
 
 pub struct LogHistory {
-    lines: heapless::Vec<heapless::String<96>, 24>,
+    lines: heapless::Vec<heapless::String<96>, 64>,
 }
 
 impl LogHistory {
@@ -61,7 +61,7 @@ pub fn log_to_history(s: &str) {
     });
 }
 
-pub fn get_logs() -> heapless::Vec<heapless::String<96>, 24> {
+    pub fn get_logs() -> heapless::Vec<heapless::String<96>, 64> {
     LOG_HISTORY.lock(|cell| {
         cell.borrow().lines.clone()
     })
@@ -177,6 +177,11 @@ async fn usb_receiver_task(
         receiver.wait_connection().await;
         loop {
             match receiver.read_packet(&mut buf).await {
+                Ok(0) => {
+                    // Host disconnected (zero-length read). Drop back to
+                    // waiting for a fresh connection instead of spinning.
+                    break;
+                }
                 Ok(n) => {
                     let cmd = &buf[..n];
                     if starts_with(cmd, b"bootloader") || starts_with(cmd, b"dfu") {
