@@ -7,7 +7,7 @@ Custom firmware for the **nice!nano v2** (nRF52840) board running async Rust wit
 ## 🚀 Key Features
 
 *   **USB-CDC-NCM Networking**: Emulates a USB-Ethernet card. Connects to the host (macOS/Linux) and automatically assigns IP addresses via an embedded DHCP server.
-*   **Web Server (smoltcp)**: Hosts a beautiful, responsive web UI at `http://192.168.42.1/` for diagnostics and OTA updates.
+*   **Web Server (smoltcp)**: Hosts a lightweight, self-contained web UI at `http://192.168.42.1/` for diagnostics and OTA updates. The page uses no external fonts or heavy effects (no `backdrop-filter`, no web fonts) to keep flash size and browser RAM usage minimal.
 *   **Web OTA (Over-the-Air) Update**: Safely upload new application binaries through the browser web portal. The system stages the firmware in secondary flash, validates it, and triggers a soft reboot.
 *   **BLE GATT Server**: Advertises as `nice_nano` and runs custom services for LED control and notifications.
 *   **Web Bluetooth UI**: A static client webpage (`ble_client.html`) using Chrome/Safari Web Bluetooth API to connect directly to the board over BLE, control the LED, and view live heartbeat logs.
@@ -73,8 +73,8 @@ If SoftDevice is already present:
 ### 3. Over-the-Air Update (Via Web Browser)
 1. Ensure the board is connected via USB and the NCM network link is active.
 2. Open `http://192.168.42.1/` in your web browser.
-3. In the "Firmware Update (Web OTA)" panel, click **Choose .bin File** and select `dist/pager.bin`.
-4. Click **Flash Firmware**. The browser will upload the buffer, and the board will reboot into the new version within 1 second of completion.
+3. Open the **Firmware** tab. Click **Choose .bin File** and select `dist/pager.bin`, then click **Flash Firmware**.
+4. The browser will upload the buffer, and the board will reboot into the new version within 1 second of completion.
 
 ---
 
@@ -102,7 +102,13 @@ The board maintains 3 separate profile slots in RAM to store bonded devices. You
     *   **Translation**: Automatically maps ASCII characters to HID standard codes and key modifiers.
 
 ### Web Interface Control
-The built-in web portal at `http://192.168.42.1/` includes a glassmorphic **Bluetooth Keyboard Controller** panel that allows you to:
+The built-in web portal at `http://192.168.42.1/` is organized into three tabbed sections:
+
+*   **Firmware**: Web OTA upload (`.bin` selection, progress bar, status) plus a **Reboot to Bootloader** button.
+*   **Bluetooth**: Live monitoring of all 3 slot bond/active status, profile switching, pairing initiation, bond deletion, and a text box to type and send text to the connected host.
+*   **Debug**: Device info (MCU, stack, IP) and the live system log console with auto-refresh, pause, and clear controls.
+
+Through the **Bluetooth** tab you can:
 1.  Monitor connection/bond status of all 3 slots in real-time.
 2.  Switch profiles and initiate pairing for the active slot.
 3.  Type text in a text box and send it to the board, which instantly replicates the typing action on the connected Bluetooth host.
@@ -114,8 +120,8 @@ The built-in web portal at `http://192.168.42.1/` includes a glassmorphic **Blue
 The firmware supports retrieving logs, rebooting to the bootloader, and updating firmware via both HTTP and USB Serial interfaces.
 
 ### HTTP Interface (Web UI)
-*   **Live Debug Logs**: Served at `http://192.168.42.1/logs`. The web page at `http://192.168.42.1/` automatically polls this endpoint every 2 seconds to display logs in real-time.
-*   **Reboot to Bootloader**: Triggered by sending a `POST` request to `http://192.168.42.1/bootloader`, or by clicking the **Reboot to Bootloader** button on the web portal.
+*   **Live Debug Logs**: Served at `http://192.168.42.1/logs`. The **Debug** tab of the web portal automatically polls this endpoint every 2 seconds to display logs in real-time.
+*   **Reboot to Bootloader**: Triggered by sending a `POST` request to `http://192.168.42.1/bootloader`, or by clicking the **Reboot to Bootloader** button on the **Firmware** tab.
 *   **Web OTA Update**: Handled via `POST /update` with the binary file.
 
 ### USB Serial Interface (CDC-ACM)

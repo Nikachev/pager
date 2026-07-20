@@ -3,315 +3,279 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>nice!nano v2 Server</title>
+  <title>nice!nano v2</title>
   <style>
+    :root {
+      --bg: #0b0f1a;
+      --panel: #111827;
+      --border: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #6366f1;
+      --accent-d: #4338ca;
+      --green: #10b981;
+      --red: #ef4444;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: radial-gradient(circle at top, #1e1b4b, #090514);
-      color: #f8fafc;
-      min-height: 100vh;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 560px; margin: 0 auto; }
+    header {
       display: flex;
       align-items: center;
-      justify-content: center;
-      margin: 0;
-      padding: 20px;
-      box-sizing: border-box;
+      justify-content: space-between;
+      margin-bottom: 12px;
     }
-    .card {
-      background: rgba(15, 23, 42, 0.4);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid rgba(99, 102, 241, 0.2);
-      border-radius: 28px;
-      padding: 40px 24px;
-      text-align: center;
-      max-width: 440px;
-      width: 100%;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
-      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-    .card:hover {
-      transform: translateY(-4px);
-      border-color: rgba(99, 102, 241, 0.4);
-      box-shadow: 0 30px 60px -15px rgba(99, 102, 241, 0.2);
-    }
-    h1 {
-      background: linear-gradient(to right, #38bdf8, #818cf8, #c084fc);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin: 16px 0 8px 0;
-      font-size: 2.2rem;
-      font-weight: 800;
-      letter-spacing: -0.025em;
-    }
-    p {
-      color: #94a3b8;
-      font-size: 1rem;
-      line-height: 1.6;
-      margin: 16px 0 28px 0;
-    }
-    .status-badge {
+    h1 { font-size: 1.1rem; margin: 0; font-weight: 700; }
+    .badge {
       display: inline-flex;
       align-items: center;
-      background: rgba(16, 185, 129, 0.1);
-      border: 1px solid rgba(16, 185, 129, 0.2);
-      color: #34d399;
-      padding: 6px 16px;
-      border-radius: 9999px;
-      font-weight: 600;
-      font-size: 0.85rem;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: var(--green);
+      border: 1px solid rgba(16,185,129,0.3);
+      background: rgba(16,185,129,0.08);
+      padding: 3px 10px;
+      border-radius: 999px;
     }
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      background: #10b981;
-      border-radius: 50%;
-      margin-right: 8px;
-      animation: pulse 2s infinite;
-    }
-    .spec-container {
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 16px;
-      padding: 16px;
-      font-family: monospace;
-      font-size: 0.85rem;
-      color: #cbd5e1;
-      text-align: left;
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    nav {
       display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .spec-item {
-      display: flex;
-      justify-content: space-between;
-    }
-    .spec-label { color: #64748b; }
-    .spec-value { color: #818cf8; font-weight: bold; }
-
-    /* OTA Container & Elements */
-    .ota-container {
-      margin-top: 28px;
-      padding-top: 24px;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .ota-title {
-      font-size: 1.05rem;
-      font-weight: 700;
-      color: #94a3b8;
-      text-align: left;
-      margin-bottom: 2px;
-    }
-    .file-label {
-      background: rgba(99, 102, 241, 0.06);
-      border: 1px dashed rgba(99, 102, 241, 0.3);
-      color: #818cf8;
-      padding: 14px;
-      border-radius: 14px;
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 0.9rem;
-      transition: all 0.3s;
-    }
-    .file-label:hover {
-      background: rgba(99, 102, 241, 0.12);
-      border-color: rgba(99, 102, 241, 0.5);
-    }
-    .file-name {
-      font-size: 0.8rem;
-      color: #64748b;
-      margin-bottom: 4px;
-    }
-    .upload-btn {
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      border: none;
-      color: white;
-      padding: 14px;
-      border-radius: 14px;
-      font-weight: 700;
-      font-size: 0.95rem;
-      cursor: pointer;
-      transition: all 0.3s;
-    }
-    .upload-btn:hover:not(:disabled) {
-      transform: translateY(-2px);
-      box-shadow: 0 10px 20px -10px rgba(139, 92, 246, 0.5);
-    }
-    .upload-btn:disabled {
-      background: #1e293b;
-      color: #475569;
-      cursor: not-allowed;
-    }
-    .progress-bar-bg {
-      background: #0f172a;
-      height: 8px;
-      border-radius: 9999px;
-      overflow: hidden;
-      margin-top: 4px;
-    }
-    .progress-bar-fill {
-      background: #10b981;
-      width: 0%;
-      height: 100%;
-      transition: width 0.1s;
-      border-radius: 9999px;
-    }
-    .ota-status {
-      font-size: 0.85rem;
-      color: #cbd5e1;
-      font-weight: 600;
-      margin-top: 2px;
-    }
-    /* New Controls and Logs Styles */
-    .control-btn {
-      background: rgba(239, 68, 68, 0.1);
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #f87171;
-      padding: 14px;
-      border-radius: 14px;
-      font-weight: 700;
-      font-size: 0.95rem;
-      cursor: pointer;
-      transition: all 0.3s;
-      width: 100%;
-    }
-    .control-btn:hover {
-      background: rgba(239, 68, 68, 0.2);
-      box-shadow: 0 4px 12px rgba(239, 68, 68, 0.2);
-      transform: translateY(-2px);
-    }
-    .log-console {
-      background: #0f172a;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: 14px;
-      padding: 16px;
-      height: 180px;
-      overflow-y: auto;
-      font-family: monospace;
-      font-size: 0.8rem;
-      color: #cbd5e1;
-      text-align: left;
-      white-space: pre-wrap;
-    }
-    .btn-group {
-      display: flex;
-      gap: 10px;
-      width: 100%;
-    }
-    .small-btn {
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      color: #cbd5e1;
-      padding: 10px 14px;
+      gap: 4px;
+      background: var(--panel);
+      border: 1px solid var(--border);
       border-radius: 10px;
-      font-size: 0.8rem;
+      padding: 4px;
+      margin-bottom: 14px;
+    }
+    nav button {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      padding: 9px 4px;
+      border-radius: 7px;
+      font-size: 0.85rem;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.3s;
+    }
+    nav button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+    section { display: none; }
+    section.active { display: block; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .card h2 {
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin: 0 0 10px 0;
+    }
+    label.file {
+      display: block;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      text-align: center;
+      color: var(--accent);
+      cursor: pointer;
+      font-weight: 600;
+    }
+    label.file:hover { border-color: var(--accent); }
+    .fname { font-size: 0.8rem; color: var(--muted); margin: 8px 0; word-break: break-all; }
+    button.btn {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      padding: 11px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button.btn:hover:not(:disabled) { background: var(--accent-d); }
+    button.btn:disabled { background: #374151; color: #6b7280; cursor: not-allowed; }
+    button.danger {
+      background: rgba(239,68,68,0.1);
+      color: var(--red);
+      border: 1px solid rgba(239,68,68,0.3);
+    }
+    button.danger:hover:not(:disabled) { background: rgba(239,68,68,0.2); }
+    .row { display: flex; gap: 8px; }
+    .row > * { flex: 1; }
+    button.small {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.small:hover { background: rgba(255,255,255,0.08); }
+    .slots { display: flex; gap: 8px; margin-bottom: 10px; }
+    .slot {
       flex: 1;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 6px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 0.8rem;
     }
-    .small-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
+    .slot .s { display: block; font-weight: 700; }
+    .slot .st { font-size: 0.7rem; color: var(--muted); }
+    .slot.on { border-color: var(--accent); background: rgba(99,102,241,0.12); color: #c7d2fe; }
+    .slot.bonded .st { color: var(--green); }
+    input[type=text] {
+      flex: 1;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #0b0f1a;
+      color: var(--text);
+      font-size: 0.9rem;
+      outline: none;
     }
-    @keyframes pulse {
-      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-      70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    input[type=text]:focus { border-color: var(--accent); }
+    .status { font-size: 0.8rem; color: var(--muted); margin-top: 8px; min-height: 1.2em; }
+    .status.ok { color: var(--green); }
+    .status.err { color: var(--red); }
+    .sectors { display: none; gap: 2px; margin-top: 8px; }
+    .sectors > div { flex: 1; height: 8px; border-radius: 2px; background: #0b0f1a; transition: background 0.1s; }
+    .sectors > div.on { background: var(--green); }
+    pre {
+      background: #0b0f1a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      height: 240px;
+      overflow-y: auto;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      white-space: pre-wrap;
+      margin: 0;
     }
+    .spec { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+    .spec div { display: flex; justify-content: space-between; padding: 2px 0; }
+    .spec b { color: var(--accent); font-weight: 600; }
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="status-badge">
-      <span class="status-dot"></span>Active Server
-    </div>
-    <h1>nice!nano v2</h1>
-    <p>This web page is served dynamically over a USB-Ethernet connection with automatic DHCP setup.</p>
+  <div class="wrap">
+    <header>
+      <h1>nice!nano v2</h1>
+      <span class="badge"><span class="dot"></span>Server active</span>
+    </header>
 
-    <div class="spec-container">
-      <div class="spec-item"><span class="spec-label">MCU:</span><span class="spec-value">nRF52840 (Cortex-M4F)</span></div>
-      <div class="spec-item"><span class="spec-label">Stack:</span><span class="spec-value">Embassy & smoltcp</span></div>
-      <div class="spec-item"><span class="spec-label">IP Address:</span><span class="spec-value">192.168.42.1</span></div>
-    </div>
+    <nav>
+      <button id="tab-fw" class="active" onclick="show('fw')">Firmware</button>
+      <button id="tab-ble" onclick="show('ble')">Bluetooth</button>
+      <button id="tab-dbg" onclick="show('dbg')">Debug</button>
+    </nav>
 
-    <!-- OTA Firmware Update -->
-    <div class="ota-container">
-      <div class="ota-title">Firmware Update (Web OTA)</div>
-      <label class="file-label" for="file-input">Choose .bin File</label>
-      <input type="file" id="file-input" accept=".bin" style="display: none;">
-      <span class="file-name" id="file-name">No file selected</span>
-      <button class="upload-btn" id="upload-btn" disabled>Flash Firmware</button>
-      <div class="progress-bar-bg" id="progress-bg" style="display: none;">
-        <div class="progress-bar-fill" id="progress-fill"></div>
+    <!-- FIRMWARE -->
+    <section id="sec-fw" class="active">
+      <div class="card">
+        <h2>Firmware Update (Web OTA)</h2>
+        <label class="file" for="file-input">Choose .bin File</label>
+        <input type="file" id="file-input" accept=".bin" style="display:none">
+        <div class="fname" id="file-name">No file selected</div>
+        <button class="btn" id="upload-btn" disabled>Flash Firmware</button>
+        <div class="sectors" id="progress-bg"></div>
+        <div class="status" id="ota-status"></div>
       </div>
-      <div class="ota-status" id="ota-status"></div>
-    </div>
-
-    <!-- Bluetooth Keyboard Controller -->
-    <div class="ota-container">
-      <div class="ota-title">Bluetooth Keyboard Controller</div>
-      
-      <div class="profile-slots" style="display: flex; gap: 8px; margin-bottom: 12px; width: 100%;">
-        <button class="slot-btn" id="slot-0-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
-          <span style="font-weight: 600;">Profile 1</span>
-          <span class="slot-status" id="slot-0-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
-        </button>
-        <button class="slot-btn" id="slot-1-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
-          <span style="font-weight: 600;">Profile 2</span>
-          <span class="slot-status" id="slot-1-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
-        </button>
-        <button class="slot-btn" id="slot-2-btn" style="flex: 1; padding: 10px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); background: rgba(255,255,255,0.03); color: #cbd5e1; cursor: pointer; font-size: 0.8rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; transition: all 0.3s; outline: none;">
-          <span style="font-weight: 600;">Profile 3</span>
-          <span class="slot-status" id="slot-2-status" style="font-size: 0.7rem; color: #64748b;">Empty</span>
-        </button>
+      <div class="card">
+        <h2>Bootloader</h2>
+        <button class="btn danger" id="bootloader-btn">Reboot to Bootloader</button>
       </div>
+    </section>
 
-      <div style="display: flex; gap: 8px; margin-bottom: 12px; width: 100%;">
-        <button class="small-btn" id="pair-btn" style="background: rgba(99, 102, 241, 0.1); border: 1px solid rgba(99, 102, 241, 0.3); color: #818cf8; flex: 1;">Pair New Device</button>
-        <button class="small-btn" id="unpair-btn" style="background: rgba(239, 68, 68, 0.05); border: 1px solid rgba(239, 68, 68, 0.2); color: #f87171; flex: 1;" disabled>Delete Bond</button>
+    <!-- BLUETOOTH -->
+    <section id="sec-ble">
+      <div class="card">
+        <h2>Bluetooth Keyboard</h2>
+        <div class="slots">
+          <div class="slot" id="slot-0-btn" onclick="switchSlot(0)"><span class="s">Profile 1</span><span class="st" id="slot-0-status">Empty</span></div>
+          <div class="slot" id="slot-1-btn" onclick="switchSlot(1)"><span class="s">Profile 2</span><span class="st" id="slot-1-status">Empty</span></div>
+          <div class="slot" id="slot-2-btn" onclick="switchSlot(2)"><span class="s">Profile 3</span><span class="st" id="slot-2-status">Empty</span></div>
+        </div>
+        <div class="row">
+          <button class="small" id="pair-btn" onclick="pair()">Pair New Device</button>
+          <button class="small" id="unpair-btn" onclick="delBond()" disabled>Delete Bond</button>
+        </div>
+        <div class="status" id="keyboard-status">Loading state...</div>
       </div>
-
-      <div style="display: flex; gap: 8px; width: 100%;">
-        <input type="text" id="keyboard-input" placeholder="Type text to send..." style="flex: 1; padding: 12px; border-radius: 12px; border: 1px solid rgba(99, 102, 241, 0.2); background: rgba(15, 23, 42, 0.6); color: #f8fafc; font-size: 0.9rem; outline: none; transition: all 0.3s;">
-        <button class="upload-btn" id="type-btn" style="padding: 12px 20px; font-size: 0.9rem; border-radius: 12px; margin: 0; min-width: 90px;">Send</button>
+      <div class="card">
+        <h2>Send Text</h2>
+        <div class="row">
+          <input type="text" id="keyboard-input" placeholder="Type text to send...">
+          <button class="btn" id="type-btn" style="flex:0 0 auto;width:auto;padding:10px 18px" onclick="sendText()">Send</button>
+        </div>
       </div>
-      <div id="keyboard-status" style="font-size: 0.8rem; color: #64748b; margin-top: 4px; text-align: left;">Loading state...</div>
-    </div>
+    </section>
 
-    <!-- Device Controls -->
-    <div class="ota-container">
-      <div class="ota-title">Device Controls</div>
-      <button class="control-btn" id="bootloader-btn">Reboot to Bootloader</button>
-    </div>
-
-    <!-- System Logs -->
-    <div class="ota-container">
-      <div class="ota-title">System Logs</div>
-      <div class="log-console" id="log-console">Loading logs...</div>
-      <div class="btn-group">
-        <button class="small-btn" id="clear-logs-btn">Clear Logs View</button>
-        <button class="small-btn" id="toggle-poll-btn">Pause Auto-Refresh</button>
+    <!-- DEBUG -->
+    <section id="sec-dbg">
+      <div class="card">
+        <h2>Device</h2>
+        <div class="spec">
+          <div><span>MCU</span><b>nRF52840</b></div>
+          <div><span>Stack</span><b>Embassy + smoltcp</b></div>
+          <div><span>IP</span><b>192.168.42.1</b></div>
+        </div>
       </div>
-    </div>
+      <div class="card">
+        <h2>System Log</h2>
+        <pre id="log-console">Loading logs...</pre>
+        <div class="row" style="margin-top:8px">
+          <button class="small" id="clear-logs-btn" onclick="clearLogs()">Clear View</button>
+          <button class="small" id="toggle-poll-btn" onclick="togglePoll()">Pause Auto-Refresh</button>
+        </div>
+      </div>
+    </section>
   </div>
 
   <script>
+    function show(id) {
+      ['fw','ble','dbg'].forEach(s => {
+        document.getElementById('sec-'+s).classList.toggle('active', s===id);
+        document.getElementById('tab-'+s).classList.toggle('active', s===id);
+      });
+    }
+
+    // ---- Firmware ----
     const fileInput = document.getElementById('file-input');
     const fileName = document.getElementById('file-name');
     const uploadBtn = document.getElementById('upload-btn');
     const progressBg = document.getElementById('progress-bg');
-    const progressFill = document.getElementById('progress-fill');
     const otaStatus = document.getElementById('ota-status');
+    const SECTORS = 32;
 
     fileInput.addEventListener('change', (e) => {
-      const file = e.target.files[0];
-      if (file) {
-        fileName.textContent = file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)';
+      const f = e.target.files[0];
+      if (f) {
+        fileName.textContent = f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)';
         uploadBtn.disabled = false;
         otaStatus.textContent = '';
       } else {
@@ -320,249 +284,152 @@
       }
     });
 
-    uploadBtn.addEventListener('click', async () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-
-      // Restrict update binary size to 480KB (matches partition limit)
-      if (file.size > 480 * 1024) {
+    uploadBtn.addEventListener('click', () => {
+      const f = fileInput.files[0];
+      if (!f) return;
+      if (f.size > 480*1024) {
         otaStatus.textContent = 'Error: File exceeds 480 KB limit!';
-        otaStatus.style.color = '#ef4444';
+        otaStatus.className = 'status err';
         return;
       }
-
       uploadBtn.disabled = true;
       fileInput.disabled = true;
-      progressBg.style.display = 'block';
+      progressBg.innerHTML = '';
+      for (let i = 0; i < SECTORS; i++) progressBg.appendChild(document.createElement('div'));
+      progressBg.style.display = 'flex';
       otaStatus.textContent = 'Uploading firmware...';
-      otaStatus.style.color = '#e2e8f0';
+      otaStatus.className = 'status';
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/update', true);
-
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
-          const percent = (e.loaded / e.total) * 100;
-          progressFill.style.width = percent + '%';
+          const pct = e.loaded / e.total * 100;
+          const filled = Math.round(pct / 100 * SECTORS);
+          const segs = progressBg.children;
+          for (let i = 0; i < SECTORS; i++) segs[i].classList.toggle('on', i < filled);
+          otaStatus.textContent = 'Writing sector ' + filled + ' / ' + SECTORS + ' (' + pct.toFixed(0) + '%)';
         }
       };
-
       xhr.onload = () => {
         if (xhr.status === 200) {
-          otaStatus.textContent = 'Success! Writing to Flash and rebooting in 1s...';
-          otaStatus.style.color = '#34d399';
-          progressFill.style.background = '#34d399';
-        } else {
-          otaStatus.textContent = 'Upload failed! Server returned code ' + xhr.status;
-          otaStatus.style.color = '#ef4444';
+          const segs = progressBg.children;
+          for (let i = 0; i < SECTORS; i++) segs[i].classList.add('on');
+          otaStatus.textContent = 'Success! Writing to Flash and rebooting...';
+          otaStatus.className = 'status ok';
+          // Re-enable controls so a repeat flash is possible after reboot.
           uploadBtn.disabled = false;
           fileInput.disabled = false;
+        } else {
+          otaStatus.textContent = 'Upload failed! Server returned code ' + xhr.status;
+          otaStatus.className = 'status err';
+          uploadBtn.disabled = false; fileInput.disabled = false;
         }
       };
-
       xhr.onerror = () => {
         otaStatus.textContent = 'Network error during upload!';
-        otaStatus.style.color = '#ef4444';
-        uploadBtn.disabled = false;
-        fileInput.disabled = false;
+        otaStatus.className = 'status err';
+        uploadBtn.disabled = false; fileInput.disabled = false;
       };
-
-      // Send raw file binary buffer
-      xhr.send(file);
+      xhr.send(f);
     });
 
-    // Reboot to Bootloader Control
     const bootloaderBtn = document.getElementById('bootloader-btn');
     bootloaderBtn.addEventListener('click', async () => {
-      if (confirm('Are you sure you want to reboot the device to bootloader mode?')) {
-        bootloaderBtn.disabled = true;
-        try {
-          const response = await fetch('/bootloader', { method: 'POST' });
-          if (response.ok) {
-            bootloaderBtn.textContent = 'Rebooting...';
-            alert('Device is rebooting to bootloader mode. Please wait for the board to reconnect.');
-          } else {
-            alert('Failed to reboot: ' + response.statusText);
-            bootloaderBtn.disabled = false;
-          }
-        } catch (e) {
-          alert('Error sending request: ' + e);
+      if (!confirm('Reboot the device to bootloader mode?')) return;
+      bootloaderBtn.disabled = true;
+      try {
+        const r = await fetch('/bootloader', { method: 'POST' });
+        if (r.ok) {
+          bootloaderBtn.textContent = 'Rebooting...';
+          alert('Device is rebooting to bootloader mode. Wait for the board to reconnect.');
+        } else {
+          alert('Failed to reboot: ' + r.statusText);
           bootloaderBtn.disabled = false;
         }
-      }
-    });
-
-    // System Logs Polling
-    const logConsole = document.getElementById('log-console');
-    const togglePollBtn = document.getElementById('toggle-poll-btn');
-    const clearLogsBtn = document.getElementById('clear-logs-btn');
-    let pollInterval = null;
-    let isPolling = true;
-
-    async function fetchLogs() {
-      try {
-        const response = await fetch('/logs');
-        if (response.ok) {
-          const text = await response.text();
-          logConsole.textContent = text || 'No logs available.';
-          logConsole.scrollTop = logConsole.scrollHeight;
-        }
       } catch (e) {
-        console.error('Error fetching logs:', e);
-      }
-    }
-
-    function startPolling() {
-      fetchLogs();
-      pollInterval = setInterval(fetchLogs, 2000);
-    }
-
-    function stopPolling() {
-      clearInterval(pollInterval);
-      pollInterval = null;
-    }
-
-    togglePollBtn.addEventListener('click', () => {
-      if (isPolling) {
-        stopPolling();
-        togglePollBtn.textContent = 'Resume Auto-Refresh';
-        isPolling = false;
-      } else {
-        startPolling();
-        togglePollBtn.textContent = 'Pause Auto-Refresh';
-        isPolling = true;
+        alert('Error sending request: ' + e);
+        bootloaderBtn.disabled = false;
       }
     });
 
-    clearLogsBtn.addEventListener('click', () => {
-      logConsole.textContent = '';
-    });
-
-    // Bluetooth Keyboard State & Controls
+    // ---- Bluetooth ----
     let activeSlot = 0;
-
     async function fetchKeyboardState() {
       try {
-        const response = await fetch('/keyboard/state');
-        if (response.ok) {
-          const state = await response.json();
-          updateKeyboardUI(state);
-        }
-      } catch (e) {
-        console.error('Error fetching keyboard state:', e);
-      }
+        const r = await fetch('/keyboard/state');
+        if (r.ok) updateKeyboardUI(await r.json());
+      } catch (e) { console.error(e); }
     }
-
     function updateKeyboardUI(state) {
-      const slots = state.slots;
-      const pairingMode = state.pairing_mode;
       const statusDiv = document.getElementById('keyboard-status');
-
-      if (pairingMode) {
-        statusDiv.innerHTML = '<span style="color: #fbbf24; font-weight: 600;">Pairing Mode Active...</span> Search for "nice_nano" on your device.';
+      if (state.pairing_mode) {
+        statusDiv.innerHTML = '<span style="color:var(--green);font-weight:600">Pairing Mode Active...</span> Search for "nice_nano" on your device.';
       } else {
-        statusDiv.innerHTML = 'Keyboard ready. Select a profile to switch.';
+        statusDiv.textContent = 'Keyboard ready. Select a profile to switch.';
       }
-
-      slots.forEach((slot, i) => {
-        const btn = document.getElementById(`slot-${i}-btn`);
-        const statusSpan = document.getElementById(`slot-${i}-status`);
-
+      state.slots.forEach((slot, i) => {
+        const btn = document.getElementById('slot-'+i+'-btn');
+        const st = document.getElementById('slot-'+i+'-status');
+        btn.classList.toggle('on', slot.active);
+        btn.classList.toggle('bonded', slot.bonded);
+        st.textContent = slot.bonded ? 'Bonded' : 'Empty';
         if (slot.active) {
           activeSlot = i;
-          btn.style.borderColor = 'rgba(99, 102, 241, 0.6)';
-          btn.style.background = 'rgba(99, 102, 241, 0.1)';
-          btn.style.color = '#818cf8';
           document.getElementById('unpair-btn').disabled = !slot.bonded;
-        } else {
-          btn.style.borderColor = 'rgba(255, 255, 255, 0.1)';
-          btn.style.background = 'rgba(255, 255, 255, 0.03)';
-          btn.style.color = '#cbd5e1';
-        }
-
-        if (slot.bonded) {
-          statusSpan.textContent = 'Bonded';
-          statusSpan.style.color = '#34d399';
-        } else {
-          statusSpan.textContent = 'Empty';
-          statusSpan.style.color = '#64748b';
         }
       });
     }
-
-    for (let i = 0; i < 3; i++) {
-      document.getElementById(`slot-${i}-btn`).addEventListener('click', async () => {
-        try {
-          const response = await fetch(`/keyboard/switch?slot=${i}`, { method: 'POST' });
-          if (response.ok) {
-            fetchKeyboardState();
-          }
-        } catch (e) {
-          alert('Error switching slot: ' + e);
-        }
-      });
+    async function switchSlot(i) {
+      try { const r = await fetch('/keyboard/switch?slot='+i, { method:'POST' }); if (r.ok) fetchKeyboardState(); }
+      catch (e) { alert('Error switching slot: ' + e); }
     }
-
-    document.getElementById('pair-btn').addEventListener('click', async () => {
-      try {
-        const response = await fetch('/keyboard/pair', { method: 'POST' });
-        if (response.ok) {
-          fetchKeyboardState();
-        }
-      } catch (e) {
-        alert('Error enabling pairing mode: ' + e);
-      }
-    });
-
-    document.getElementById('unpair-btn').addEventListener('click', async () => {
-      if (confirm(`Are you sure you want to delete the bond for Profile ${activeSlot + 1}?`)) {
-        try {
-          const response = await fetch(`/keyboard/delete?slot=${activeSlot}`, { method: 'POST' });
-          if (response.ok) {
-            fetchKeyboardState();
-          }
-        } catch (e) {
-          alert('Error deleting bond: ' + e);
-        }
-      }
-    });
-
+    async function pair() {
+      try { const r = await fetch('/keyboard/pair', { method:'POST' }); if (r.ok) fetchKeyboardState(); }
+      catch (e) { alert('Error enabling pairing mode: ' + e); }
+    }
+    async function delBond() {
+      if (!confirm('Delete the bond for Profile ' + (activeSlot+1) + '?')) return;
+      try { const r = await fetch('/keyboard/delete?slot='+activeSlot, { method:'POST' }); if (r.ok) fetchKeyboardState(); }
+      catch (e) { alert('Error deleting bond: ' + e); }
+    }
     const typeBtn = document.getElementById('type-btn');
     const kbInput = document.getElementById('keyboard-input');
-
     async function sendText() {
       const text = kbInput.value;
       if (!text) return;
-
       typeBtn.disabled = true;
       try {
-        const response = await fetch('/keyboard/type', {
-          method: 'POST',
-          body: text,
-          headers: {
-            'Content-Type': 'text/plain'
-          }
-        });
-        if (response.ok) {
-          kbInput.value = '';
-        } else {
-          alert('Failed to send text: ' + response.statusText);
-        }
-      } catch (e) {
-        alert('Error sending text: ' + e);
-      } finally {
-        typeBtn.disabled = false;
-      }
+        const r = await fetch('/keyboard/type', { method:'POST', body: text, headers: { 'Content-Type':'text/plain' } });
+        if (r.ok) kbInput.value = ''; else alert('Failed to send text: ' + r.statusText);
+      } catch (e) { alert('Error sending text: ' + e); }
+      finally { typeBtn.disabled = false; }
     }
+    kbInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
 
-    typeBtn.addEventListener('click', sendText);
-    kbInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        sendText();
-      }
-    });
+    // ---- Debug ----
+    const logConsole = document.getElementById('log-console');
+    let pollInterval = null, isPolling = true;
+    async function fetchLogs() {
+      try {
+        const r = await fetch('/logs');
+        if (r.ok) {
+          const t = await r.text();
+          logConsole.textContent = t || 'No logs available.';
+          logConsole.scrollTop = logConsole.scrollHeight;
+        }
+      } catch (e) { console.error(e); }
+    }
+    function startPolling() { fetchLogs(); pollInterval = setInterval(fetchLogs, 2000); }
+    function stopPolling() { clearInterval(pollInterval); pollInterval = null; }
+    function togglePoll() {
+      if (isPolling) { stopPolling(); togglePollBtn.textContent = 'Resume Auto-Refresh'; isPolling = false; }
+      else { startPolling(); togglePollBtn.textContent = 'Pause Auto-Refresh'; isPolling = true; }
+    }
+    const togglePollBtn = document.getElementById('toggle-poll-btn');
+    function clearLogs() { logConsole.textContent = ''; }
 
-    // Start logs and keyboard polling automatically
+    // ---- Start ----
     startPolling();
     setInterval(fetchKeyboardState, 2000);
     fetchKeyboardState();
