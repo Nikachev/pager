@@ -6,10 +6,12 @@ import sys
 from bleak import BleakScanner, BleakClient
 
 # Configuration
-KEYBOARD_IP = "192.168.42.1"
+from common import DEFAULT_BASE_URL, HID_INPUT_REPORT_UUID
+
+KEYBOARD_IP = DEFAULT_BASE_URL.replace("http://", "")
 DEVICE_NAME = "nice_nano_4"
 HID_SERVICE_UUID = "00001812-0000-1000-8000-00805f9b34fb"
-INPUT_REPORT_UUID = "00002a4d-0000-1000-8000-00805f9b34fb"
+INPUT_REPORT_UUID = HID_INPUT_REPORT_UUID
 
 def trigger_pairing_mode():
     print(f"[*] Triggering Pairing Mode on the board via HTTP POST http://{KEYBOARD_IP}/keyboard/pair...")

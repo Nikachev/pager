@@ -40,6 +40,8 @@ pub unsafe fn copy_and_reset(src_addr: u32, dest_addr: u32, len_bytes: u32) -> !
     core::ptr::write_volatile(NVMC_CONFIG, 0); // Read-Only mode
     while core::ptr::read_volatile(NVMC_READY) == 0 {}
 
+    cortex_m::asm::dsb();
+    cortex_m::asm::isb();
     let aircr = 0xE000ED0C as *mut u32;
     core::ptr::write_volatile(aircr, 0x05FA0004);
 
@@ -51,6 +53,7 @@ use embedded_storage_async::nor_flash::NorFlash;
 pub struct OtaWriter<'a, F: NorFlash> {
     flash: &'a mut F,
     offset: u32,
+    last_erased_page: u32,
     write_buffer: [u8; 256],
     write_buf_len: usize,
 }
@@ -60,21 +63,28 @@ impl<'a, F: NorFlash> OtaWriter<'a, F> {
         Self {
             flash,
             offset: start_addr,
+            last_erased_page: u32::MAX,
             write_buffer: [0u8; 256],
             write_buf_len: 0,
         }
     }
 
-    pub async fn erase(&mut self, size: usize) -> Result<(), F::Error> {
-        let page_size = 4096;
-        let erase_size = (size + page_size - 1) & !(page_size - 1);
-        crate::log_msg!("Erasing staging partition: {} bytes...", erase_size);
-        self.flash.erase(self.offset, self.offset + erase_size as u32).await
+    #[allow(dead_code)]
+    pub async fn erase(&mut self, _size: usize) -> Result<(), F::Error> {
+        Ok(())
     }
 
     pub async fn write_chunk(&mut self, data: &[u8]) -> Result<(), F::Error> {
+        let page_size = 4096u32;
         let mut data_idx = 0;
         while data_idx < data.len() {
+            let page_addr = self.offset & !(page_size - 1);
+            if page_addr != self.last_erased_page {
+                self.flash.erase(page_addr, page_addr + page_size).await?;
+                self.last_erased_page = page_addr;
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
+            }
+
             let chunk_size = core::cmp::min(data.len() - data_idx, self.write_buffer.len() - self.write_buf_len);
             self.write_buffer[self.write_buf_len..self.write_buf_len + chunk_size]
                 .copy_from_slice(&data[data_idx..data_idx + chunk_size]);
@@ -85,6 +95,7 @@ impl<'a, F: NorFlash> OtaWriter<'a, F> {
                 self.flash.write(self.offset, &self.write_buffer).await?;
                 self.offset += self.write_buffer.len() as u32;
                 self.write_buf_len = 0;
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(1)).await;
             }
         }
         Ok(())
@@ -92,6 +103,10 @@ impl<'a, F: NorFlash> OtaWriter<'a, F> {
 
     pub async fn flush(&mut self) -> Result<(), F::Error> {
         if self.write_buf_len > 0 {
+            while self.write_buf_len % 4 != 0 {
+                self.write_buffer[self.write_buf_len] = 0xFF;
+                self.write_buf_len += 1;
+            }
             self.flash.write(self.offset, &self.write_buffer[..self.write_buf_len]).await?;
             self.offset += self.write_buf_len as u32;
             self.write_buf_len = 0;

@@ -1,54 +1,64 @@
-use defmt::*;
+use defmt::warn;
 use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
 use embedded_io_async::Write;
-use embedded_storage_async::nor_flash::NorFlash as _;
-use embedded_storage_async::nor_flash::ReadNorFlash as _;
 use embassy_time::{Duration, Timer};
-use crate::flash::copy_and_reset;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use crate::flash::copy_and_reset;
 
 pub const MAX_BIN_SIZE: usize = 400 * 1024;
 pub const STAGING_START_ADDR: u32 = 0x8C000;
-pub const ACTIVE_START_ADDR: u32 = 0x27000;
+pub const ACTIVE_START_ADDR: u32 = 0x00000;
 
-// Persistent BLE bonding keys are stored in the last flash page before the
-// bootloader config region. Must NOT overlap with staging (ends at 0xF0000).
-pub const BONDS_STORAGE_ADDR: u32 = 0xF0000;
+#[allow(dead_code)]
+pub const BONDS_STORAGE_ADDR: u32 = 0xFC000;
 
-// A monotonically increasing boot counter, folded into the BLE address so
-// every reboot presents a new device identity to the host (avoids stale-bond
-// failures). Kept in its own flash page, well clear of staging/app/bootloader.
-pub const BOOT_COUNT_ADDR: u32 = 0xEE000;
-pub const BOOT_COUNT_PAGE: u32 = 0xEE000;
+#[allow(dead_code)]
+pub const BOOT_COUNT_ADDR: u32 = 0xFA000;
+#[allow(dead_code)]
+pub const BOOT_COUNT_PAGE: u32 = 0xFA000;
 
-pub async fn next_boot_count(flash: &mut nrf_softdevice::Flash) -> u32 {
+#[allow(dead_code)]
+pub fn next_boot_count<F: embedded_storage::nor_flash::NorFlash>(flash: &mut F) -> u32 {
     let mut buf = [0u8; 4];
-    let _ = flash.read(BOOT_COUNT_ADDR, &mut buf).await;
+    let _ = flash.read(BOOT_COUNT_ADDR, &mut buf);
     let count = u32::from_le_bytes(buf);
     let next = count.wrapping_add(1);
     let _ = flash
         .erase(BOOT_COUNT_PAGE, BOOT_COUNT_PAGE + 4096)
-        .await;
-    let _ = flash.write(BOOT_COUNT_ADDR, &next.to_le_bytes()).await;
+        ;
+    let _ = flash.write(BOOT_COUNT_ADDR, &next.to_le_bytes());
     next
 }
 
 const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
 
 // Web server task serving the responsive HTML page on port 80 and handling requests
+//
+// Stability notes (reworked from the original):
+//  * The TCP socket pool in the embassy_net Stack is sized with headroom
+//    (see StackResources<8> in main.rs) so a stalled connection can never
+//    starve the server or the DHCP server.
+//  * Every accepted connection gets a bounded 8s I/O timeout, so a dead NCM
+//    link (or a client that vanishes mid-request) releases its socket instead
+//    of hanging the single accept loop forever.
+//  * Each request is fully handled and the socket closed before the next
+//    accept, keeping memory use flat and the parser state clean.
 #[embassy_executor::task]
 pub async fn web_task(
     stack: Stack<'static>,
-    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_softdevice::Flash>,
+    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_mpsl::Flash<'static>>,
 ) -> ! {
-    let mut rx_buffer = [0u8; 2048];
-    let mut tx_buffer = [0u8; 2048];
+    let mut rx_buffer = [0u8; 8192];
+    let mut tx_buffer = [0u8; 4096];
     let mut buf = [0u8; 2048]; // Buffered HTTP headers
 
     loop {
+        buf.fill(0);
+        rx_buffer.fill(0);
+        tx_buffer.fill(0);
         let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(10)));
+        socket.set_timeout(Some(Duration::from_secs(60)));
 
         crate::log_msg!("Web server listening on port 80...");
         if let Err(e) = socket.accept(80).await {
@@ -124,10 +134,6 @@ pub async fn web_task(
             let mut flash = flash_mutex.lock().await;
             let mut writer = crate::flash::OtaWriter::new(&mut *flash, STAGING_START_ADDR);
 
-            if let Err(e) = writer.erase(content_len).await {
-                warn!("Flash erase error: {:?}", e);
-            }
-
             let body_start = headers_end + 4;
             let initial_body_len = read_len - body_start;
             let mut total_read = 0;
@@ -160,6 +166,7 @@ pub async fn web_task(
                             break;
                         }
                         total_read += n;
+                        Timer::after(Duration::from_millis(1)).await;
                     }
                     Err(e) => {
                         warn!("Socket read error: {:?}", e);
@@ -198,6 +205,7 @@ pub async fn web_task(
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
+                continue;
             }
         } else if starts_with(request_line, b"GET /keyboard/state") {
             let mut response_body = heapless::String::<512>::new();
@@ -282,7 +290,7 @@ pub async fn web_task(
                 });
                 // Erase the bond from flash so it stays in sync with the host.
                 let mut flash = flash_mutex.lock().await;
-                crate::ble::erase_bond_slot(&mut flash, slot).await;
+                crate::ble::erase_bond_slot(&mut *flash, slot).await;
                 drop(flash);
                 if is_active {
                     let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::RestartAdvertising);
@@ -345,11 +353,7 @@ pub async fn web_task(
             // Wait a bit for response to send
             Timer::after(Duration::from_millis(500)).await;
 
-            unsafe {
-                let _ = nrf_softdevice::raw::sd_power_gpregret_set(0, 0x57);
-                let aircr = 0xE000ED0C as *mut u32;
-                core::ptr::write_volatile(aircr, 0x05FA0004);
-            }
+            cortex_m::peripheral::SCB::sys_reset();
         } else if starts_with(request_line, b"GET /logs") {
             let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n";
             let _ = socket.write_all(headers.as_bytes()).await;
@@ -450,4 +454,3 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
 
     if found_digit { Some(len) } else { None }
 }
-

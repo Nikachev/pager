@@ -3,9 +3,11 @@ import time
 import os
 import shutil
 
-PORT = "/dev/cu.usbmodem123456803"
+from common import DEFAULT_PORT, UF2_VOLUME
+
+PORT = DEFAULT_PORT
 UF2_PATH = "dist/pager.uf2"
-VOLUME = "/Volumes/NICENANO"
+VOLUME = UF2_VOLUME
 
 def flash():
     print(f"[*] Connecting to serial port {PORT}...")
