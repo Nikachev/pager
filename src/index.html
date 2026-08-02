@@ -205,10 +205,6 @@
         <div class="sectors" id="progress-bg"></div>
         <div class="status" id="ota-status"></div>
       </div>
-      <div class="card">
-        <h2>Bootloader</h2>
-        <button class="btn danger" id="bootloader-btn">Reboot to Bootloader</button>
-      </div>
     </section>
 
     <!-- BLUETOOTH -->
@@ -284,11 +280,22 @@
       }
     });
 
-    uploadBtn.addEventListener('click', () => {
+    function crc32(bytes) {
+      let crc = 0xFFFFFFFF;
+      for (const byte of bytes) {
+        crc ^= byte;
+        for (let bit = 0; bit < 8; bit++) {
+          crc = (crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+        }
+      }
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+
+    uploadBtn.addEventListener('click', async () => {
       const f = fileInput.files[0];
       if (!f) return;
-      if (f.size > 480*1024) {
-        otaStatus.textContent = 'Error: File exceeds 480 KB limit!';
+      if (f.size > 488*1024) {
+        otaStatus.textContent = 'Error: Package exceeds 488 KB limit!';
         otaStatus.className = 'status err';
         return;
       }
@@ -300,8 +307,11 @@
       otaStatus.textContent = 'Uploading firmware...';
       otaStatus.className = 'status';
 
+      otaStatus.textContent = 'Verifying firmware...';
+      const checksum = crc32(new Uint8Array(await f.arrayBuffer()));
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/update', true);
+      xhr.setRequestHeader('X-Pager-CRC32', checksum.toString(16).padStart(8, '0'));
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) {
           const pct = e.loaded / e.total * 100;
@@ -334,25 +344,6 @@
       xhr.send(f);
     });
 
-    const bootloaderBtn = document.getElementById('bootloader-btn');
-    bootloaderBtn.addEventListener('click', async () => {
-      if (!confirm('Reboot the device to bootloader mode?')) return;
-      bootloaderBtn.disabled = true;
-      try {
-        const r = await fetch('/bootloader', { method: 'POST' });
-        if (r.ok) {
-          bootloaderBtn.textContent = 'Rebooting...';
-          alert('Device is rebooting to bootloader mode. Wait for the board to reconnect.');
-        } else {
-          alert('Failed to reboot: ' + r.statusText);
-          bootloaderBtn.disabled = false;
-        }
-      } catch (e) {
-        alert('Error sending request: ' + e);
-        bootloaderBtn.disabled = false;
-      }
-    });
-
     // ---- Bluetooth ----
     let activeSlot = 0;
     async function fetchKeyboardState() {
@@ -364,7 +355,7 @@
     function updateKeyboardUI(state) {
       const statusDiv = document.getElementById('keyboard-status');
       if (state.pairing_mode) {
-        statusDiv.innerHTML = '<span style="color:var(--green);font-weight:600">Pairing Mode Active...</span> Search for "nice_nano" on your device.';
+        statusDiv.innerHTML = '<span style="color:var(--green);font-weight:600">Pairing Mode Active...</span> Search for "TrouBLE-Pager" on your device.';
       } else {
         statusDiv.textContent = 'Keyboard ready. Select a profile to switch.';
       }

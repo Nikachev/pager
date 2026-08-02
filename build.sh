@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Change directory to the script's directory
 cd "$(dirname "$0")"
@@ -11,28 +11,49 @@ echo "=================================================="
 echo "         Building nice!nano v2 Firmware           "
 echo "=================================================="
 
+SLOT="${PAGER_SLOT:-A}"
+case "$SLOT" in A|B) ;; *) echo "PAGER_SLOT must be A or B" >&2; exit 2 ;; esac
+ELF_PATH="target/thumbv7em-none-eabihf/release/pager"
+BIN_PATH="dist/pager-${SLOT}.bin"
+HEX_PATH="dist/pager-${SLOT}.hex"
+
 echo "1. Compiling release binary..."
-cargo build --release
+PAGER_SLOT="$SLOT" cargo build --release
+
+extract() {
+    local fmt=$1 out=$2
+    if command -v rust-objcopy &>/dev/null; then
+        rust-objcopy -O "$fmt" "$ELF_PATH" "$out"
+    else
+        cargo objcopy --release -- -O "$fmt" "$out"
+    fi
+}
 
 echo "2. Extracting raw Application binary (.bin)..."
-cargo objcopy --release -- -O binary target/thumbv7em-none-eabihf/release/pager.bin
-cp target/thumbv7em-none-eabihf/release/pager.bin dist/pager.bin
+extract binary "$BIN_PATH"
 
 echo "3. Extracting Application HEX (.hex)..."
-cargo objcopy --release -- -O ihex target/thumbv7em-none-eabihf/release/pager.hex
-cp target/thumbv7em-none-eabihf/release/pager.hex dist/pager.hex
+extract ihex "$HEX_PATH"
 
-echo "4. Converting Application to USB UF2 (.uf2)..."
-python3 uf2conv.py dist/pager.bin --family 0xADA52840 --base 0x00000 --output dist/pager.uf2
+BIN_SIZE=$(wc -c < "$BIN_PATH" | tr -d ' ')
+MAX_BIN_SIZE=$((484 * 1024))
+if [ "$BIN_SIZE" -gt "$MAX_BIN_SIZE" ]; then
+    echo "Error: ${BIN_PATH} is ${BIN_SIZE} bytes; slot image capacity is ${MAX_BIN_SIZE} bytes." >&2
+    exit 1
+fi
+
+if command -v shasum >/dev/null 2>&1; then
+    BIN_SHA256=$(shasum -a 256 "$BIN_PATH" | awk '{print $1}')
+else
+    BIN_SHA256=$(sha256sum "$BIN_PATH" | awk '{print $1}')
+fi
 
 echo "=================================================="
 echo "🎉 Build complete! Output files generated in dist/:"
 echo "--------------------------------------------------"
-echo "📂 dist/pager.bin   <- Raw application binary"
-echo "                      [Use this for USB Serial DFU Update]"
+echo "📂 ${BIN_PATH}   <- Raw application binary for slot ${SLOT}"
+echo "                      [Input for scripts/sign_firmware.py]"
+echo "                      ${BIN_SIZE} bytes, SHA-256: ${BIN_SHA256}"
 echo ""
-echo "📂 dist/pager.hex   <- Application Intel HEX"
-echo ""
-echo "📂 dist/pager.uf2   <- Standalone USB UF2 image"
-echo "                      [Use this for USB UF2 bootloader flashing]"
+echo "📂 ${HEX_PATH}   <- Application Intel HEX"
 echo "=================================================="

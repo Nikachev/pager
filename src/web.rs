@@ -1,37 +1,193 @@
 use defmt::warn;
-use embassy_net::Stack;
 use embassy_net::tcp::TcpSocket;
-use embedded_io_async::Write;
-use embassy_time::{Duration, Timer};
+use embassy_net::Stack;
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use crate::flash::copy_and_reset;
+use embassy_sync::pipe::Pipe;
+use embassy_sync::signal::Signal;
+use embassy_time::{Duration, Timer};
+use embedded_io_async::Write;
 
-pub const MAX_BIN_SIZE: usize = 400 * 1024;
-pub const STAGING_START_ADDR: u32 = 0x8C000;
-pub const ACTIVE_START_ADDR: u32 = 0x00000;
+pub static OTA_PIPE: Pipe<ThreadModeRawMutex, 16384> = Pipe::new();
+pub static OTA_COMMAND_SIGNAL: Signal<ThreadModeRawMutex, OtaCommand> = Signal::new();
+pub static OTA_CANCEL_SIGNAL: Signal<ThreadModeRawMutex, ()> = Signal::new();
+pub static OTA_READY_SIGNAL: Signal<ThreadModeRawMutex, Result<(), ()>> = Signal::new();
+pub static OTA_RESULT_SIGNAL: Signal<ThreadModeRawMutex, Result<(), ()>> = Signal::new();
 
-#[allow(dead_code)]
-pub const BONDS_STORAGE_ADDR: u32 = 0xFC000;
-
-#[allow(dead_code)]
-pub const BOOT_COUNT_ADDR: u32 = 0xFA000;
-#[allow(dead_code)]
-pub const BOOT_COUNT_PAGE: u32 = 0xFA000;
-
-#[allow(dead_code)]
-pub fn next_boot_count<F: embedded_storage::nor_flash::NorFlash>(flash: &mut F) -> u32 {
-    let mut buf = [0u8; 4];
-    let _ = flash.read(BOOT_COUNT_ADDR, &mut buf);
-    let count = u32::from_le_bytes(buf);
-    let next = count.wrapping_add(1);
-    let _ = flash
-        .erase(BOOT_COUNT_PAGE, BOOT_COUNT_PAGE + 4096)
-        ;
-    let _ = flash.write(BOOT_COUNT_ADDR, &next.to_le_bytes());
-    next
+#[derive(Clone, Copy)]
+pub enum OtaCommand {
+    Start {
+        content_len: usize,
+        target_start: u32,
+        target_slot: u32,
+    },
+    Cancel,
 }
 
+#[embassy_executor::task]
+pub async fn ota_consumer_task(
+    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_mpsl::Flash<'static>>,
+) -> ! {
+    loop {
+        let cmd = OTA_COMMAND_SIGNAL.wait().await;
+        let (content_len, target_start, target_slot) = match cmd {
+            OtaCommand::Start {
+                content_len,
+                target_start,
+                target_slot,
+            } => (content_len, target_start, target_slot),
+            OtaCommand::Cancel => {
+                OTA_PIPE.clear();
+                continue;
+            }
+        };
+
+        crate::log_msg!("OTA Consumer started for {} bytes", content_len);
+        OTA_PIPE.clear();
+        OTA_CANCEL_SIGNAL.reset();
+
+        let mut flash_guard = None;
+        for _ in 0..50 {
+            if let Ok(guard) = flash_mutex.try_lock() {
+                flash_guard = Some(guard);
+                break;
+            }
+            Timer::after(Duration::from_millis(100)).await;
+        }
+
+        let mut flash = match flash_guard {
+            Some(g) => g,
+            None => {
+                crate::log_msg!("OTA Consumer error: flash_mutex locked");
+                OTA_READY_SIGNAL.signal(Err(()));
+                OTA_PIPE.clear();
+                continue;
+            }
+        };
+
+        crate::log_msg!(
+            "OTA Consumer ready for streaming {} bytes (on-the-fly page erasing)",
+            content_len
+        );
+        // The producer must not write before this point: this task clears the
+        // pipe above, so accepting body bytes earlier can silently discard the
+        // first part of an update and leave both tasks waiting forever.
+        OTA_READY_SIGNAL.signal(Ok(()));
+
+        let mut writer = crate::flash::OtaWriter::new(&mut *flash, target_start);
+        let mut total_written = 0;
+        let mut write_err = false;
+        let mut read_buf = [0u8; 1024];
+
+        while total_written < content_len && !write_err {
+            let to_read = core::cmp::min(read_buf.len(), content_len - total_written);
+            let mut pipe = &OTA_PIPE;
+            let read_fut = embedded_io_async::Read::read(&mut pipe, &mut read_buf[..to_read]);
+            let cancel_fut = OTA_CANCEL_SIGNAL.wait();
+
+            let n = match embassy_futures::select::select(read_fut, cancel_fut).await {
+                embassy_futures::select::Either::First(Ok(n)) if n > 0 => n,
+                embassy_futures::select::Either::First(_) => {
+                    write_err = true;
+                    break;
+                }
+                embassy_futures::select::Either::Second(_) => {
+                    crate::log_msg!("OTA Consumer: received cancellation signal");
+                    write_err = true;
+                    break;
+                }
+            };
+
+            if let Err(e) = writer.write_chunk(&read_buf[..n]).await {
+                crate::log_msg!("OTA Consumer write error: {:?}", e);
+                write_err = true;
+                break;
+            }
+            total_written += n;
+        }
+
+        if !write_err && total_written == content_len {
+            if let Err(e) = writer.flush().await {
+                crate::log_msg!("OTA Consumer flush error: {:?}", e);
+                OTA_RESULT_SIGNAL.signal(Err(()));
+            } else {
+                drop(writer);
+                match crate::flash::package_targets_slot(&mut *flash, target_start, target_slot)
+                    .await
+                {
+                    Ok(true) => {
+                        crate::log_msg!(
+                            "OTA Consumer successfully finished writing {} bytes",
+                            total_written
+                        );
+                        OTA_RESULT_SIGNAL.signal(Ok(()));
+                    }
+                    Ok(false) => {
+                        crate::log_msg!("OTA package target slot mismatch");
+                        OTA_RESULT_SIGNAL.signal(Err(()));
+                    }
+                    Err(error) => {
+                        crate::log_msg!("OTA manifest read error: {:?}", error);
+                        OTA_RESULT_SIGNAL.signal(Err(()));
+                    }
+                }
+            }
+        } else {
+            crate::log_msg!(
+                "OTA Consumer write incomplete: {} / {}",
+                total_written,
+                content_len
+            );
+            OTA_RESULT_SIGNAL.signal(Err(()));
+        }
+
+        crate::flash::stop_flashing();
+        OTA_PIPE.clear();
+    }
+}
+
+/// Entire A/B slot package, including its signed 4 KiB manifest page.
+pub const MAX_BIN_SIZE: usize = 488 * 1024;
+pub const SLOT_A_MANIFEST_ADDR: u32 = 0x0000_8000;
+pub const SLOT_B_MANIFEST_ADDR: u32 = 0x0008_2000;
+
+pub fn running_slot() -> u32 {
+    if option_env!("PAGER_SLOT") == Some("B") {
+        1
+    } else {
+        0
+    }
+}
+
+pub fn inactive_slot() -> u32 {
+    1 - running_slot()
+}
+
+pub fn inactive_slot_manifest_addr() -> u32 {
+    if inactive_slot() == 0 {
+        SLOT_A_MANIFEST_ADDR
+    } else {
+        SLOT_B_MANIFEST_ADDR
+    }
+}
+
+const HTTP_200_SUCCESS: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+const HTTP_400_MISSING_SLOT: &str =
+    "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nMissing slot";
+
 const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
+const USB_ENABLE: *mut u32 = 0x40027500 as *mut u32;
+
+/// Detach USB long enough for macOS to discard its CDC-NCM state before the
+/// bootloader and then the new application enumerate again. Both OTA paths
+/// use this routine so serial DFU cannot leave a stale NCM interface behind.
+pub async fn reset_after_usb_detach() -> ! {
+    unsafe {
+        core::ptr::write_volatile(USB_USBPULLUP, 0);
+        core::ptr::write_volatile(USB_ENABLE, 0);
+    }
+    Timer::after(Duration::from_millis(3000)).await;
+    crate::flash::reset_to_bootloader()
+}
 
 // Web server task serving the responsive HTML page on port 80 and handling requests
 //
@@ -45,20 +201,17 @@ const USB_USBPULLUP: *mut u32 = 0x40027504 as *mut u32;
 //  * Each request is fully handled and the socket closed before the next
 //    accept, keeping memory use flat and the parser state clean.
 #[embassy_executor::task]
-pub async fn web_task(
-    stack: Stack<'static>,
-    flash_mutex: &'static embassy_sync::mutex::Mutex<ThreadModeRawMutex, nrf_mpsl::Flash<'static>>,
-) -> ! {
-    let mut rx_buffer = [0u8; 8192];
-    let mut tx_buffer = [0u8; 4096];
+pub async fn web_task(stack: Stack<'static>) -> ! {
+    static RX_BUFFER: static_cell::StaticCell<[u8; 8192]> = static_cell::StaticCell::new();
+    static TX_BUFFER: static_cell::StaticCell<[u8; 4096]> = static_cell::StaticCell::new();
+    let rx_buffer = RX_BUFFER.init([0u8; 8192]);
+    let tx_buffer = TX_BUFFER.init([0u8; 4096]);
     let mut buf = [0u8; 2048]; // Buffered HTTP headers
 
     loop {
         buf.fill(0);
-        rx_buffer.fill(0);
-        tx_buffer.fill(0);
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(60)));
+        let mut socket = TcpSocket::new(stack, rx_buffer, tx_buffer);
+        socket.set_timeout(Some(Duration::from_secs(8)));
 
         crate::log_msg!("Web server listening on port 80...");
         if let Err(e) = socket.accept(80).await {
@@ -67,6 +220,16 @@ pub async fn web_task(
         }
 
         crate::log_msg!("Connection accepted from {:?}", socket.remote_endpoint());
+
+        if crate::flash::IS_FLASHING.load(core::sync::atomic::Ordering::SeqCst) {
+            crate::log_msg!("Web server: DFU in progress, returning 503");
+            let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 22\r\nConnection: close\r\n\r\nDFU Update In Progress";
+            let _ = socket.write_all(response.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+            Timer::after(Duration::from_millis(100)).await;
+            continue;
+        }
 
         // Read initial data to locate end of HTTP headers
         let mut read_len = 0;
@@ -97,10 +260,12 @@ pub async fn web_task(
         let headers_end = match find_subsequence(&buf[..read_len], b"\r\n\r\n") {
             Some(idx) => idx,
             None => {
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let response =
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
+                Timer::after(Duration::from_millis(100)).await;
                 continue;
             }
         };
@@ -116,72 +281,206 @@ pub async fn web_task(
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.flush().await;
                     socket.close();
+                    Timer::after(Duration::from_millis(100)).await;
                     continue;
                 }
             };
 
-            crate::log_msg!("OTA update request received. Size: {} bytes", content_len);
+            let expected_crc = match parse_hex_u32_header(request_line, b"x-pager-crc32:") {
+                Some(crc) => crc,
+                None => {
+                    let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 28\r\nConnection: close\r\n\r\nMissing X-Pager-CRC32 header";
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.flush().await;
+                    socket.close();
+                    continue;
+                }
+            };
+
+            if !crate::flash::try_start_flashing() {
+                crate::log_msg!("Web OTA: DFU already in progress, returning 503");
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 22\r\nConnection: close\r\n\r\nDFU Update In Progress";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                socket.close();
+                Timer::after(Duration::from_millis(100)).await;
+                continue;
+            }
 
             if content_len > MAX_BIN_SIZE {
                 warn!("Upload size exceeds limit");
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 22\r\nConnection: close\r\n\r\nFile exceeds 400KB limit";
+                crate::flash::stop_flashing();
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 24\r\nConnection: close\r\n\r\nFile exceeds 488KB limit";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                socket.close();
+                Timer::after(Duration::from_millis(100)).await;
+                continue;
+            }
+
+            if find_subsequence(request_line, b"100-continue").is_some()
+                || find_subsequence(request_line, b"100-Continue").is_some()
+            {
+                let continue_resp = "HTTP/1.1 100 Continue\r\n\r\n";
+                let _ = socket.write_all(continue_resp.as_bytes()).await;
+            }
+
+            let body_start = headers_end + 4;
+            let initial_body_len = read_len - body_start;
+
+            crate::log_msg!(
+                "OTA update request received. Size: {} bytes, initial_body: {}",
+                content_len,
+                initial_body_len
+            );
+
+            // Prepare signals and notify Consumer task
+            OTA_PIPE.clear();
+            OTA_READY_SIGNAL.reset();
+            OTA_RESULT_SIGNAL.reset();
+            OTA_COMMAND_SIGNAL.signal(OtaCommand::Start {
+                content_len,
+                target_start: inactive_slot_manifest_addr(),
+                target_slot: inactive_slot(),
+            });
+
+            // Wait until the consumer has cleared the pipe and acquired flash
+            // access. Without this handshake, its setup clear can race the
+            // first incoming body bytes, causing the uploader to stall once
+            // the TCP receive window fills.
+            if OTA_READY_SIGNAL.wait().await.is_err() {
+                crate::log_msg!("OTA Consumer could not acquire flash access");
+                crate::flash::stop_flashing();
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 22\r\nConnection: close\r\n\r\nFlash temporarily busy";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                socket.close();
+                Timer::after(Duration::from_millis(100)).await;
+                continue;
+            }
+
+            let mut total_read = 0;
+            let mut read_error = false;
+            let mut consumer_result = None;
+            let mut crc = crate::flash::CRC32_INIT;
+
+            // Push initial body block if any to Pipe
+            if initial_body_len > 0 {
+                let bytes_to_process = core::cmp::min(initial_body_len, content_len);
+                let mut pipe = &OTA_PIPE;
+                let write_fut = embedded_io_async::Write::write_all(
+                    &mut pipe,
+                    &buf[body_start..body_start + bytes_to_process],
+                );
+                match embassy_futures::select::select(write_fut, OTA_RESULT_SIGNAL.wait()).await {
+                    embassy_futures::select::Either::First(Ok(())) => {
+                        crc = crate::flash::crc32_update(
+                            crc,
+                            &buf[body_start..body_start + bytes_to_process],
+                        );
+                        total_read += bytes_to_process;
+                    }
+                    embassy_futures::select::Either::First(Err(_)) => read_error = true,
+                    embassy_futures::select::Either::Second(result) => {
+                        consumer_result = Some(result)
+                    }
+                }
+            }
+
+            // Stream remaining body directly into RAM Pipe (microsecond speed!)
+            let mut read_buf = [0u8; 1024];
+            while !read_error && total_read < content_len {
+                let to_read = core::cmp::min(read_buf.len(), content_len - total_read);
+                match socket.read(&mut read_buf[..to_read]).await {
+                    Ok(0) => {
+                        crate::log_msg!("Socket closed prematurely by client");
+                        read_error = true;
+                        break;
+                    }
+                    Ok(n) => {
+                        let mut pipe = &OTA_PIPE;
+                        let write_fut =
+                            embedded_io_async::Write::write_all(&mut pipe, &read_buf[..n]);
+                        match embassy_futures::select::select(write_fut, OTA_RESULT_SIGNAL.wait())
+                            .await
+                        {
+                            embassy_futures::select::Either::First(Ok(())) => {
+                                crc = crate::flash::crc32_update(crc, &read_buf[..n]);
+                                total_read += n;
+                            }
+                            embassy_futures::select::Either::First(Err(_)) => {
+                                read_error = true;
+                                break;
+                            }
+                            embassy_futures::select::Either::Second(result) => {
+                                consumer_result = Some(result);
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        crate::log_msg!("Socket read error: {:?}", e);
+                        read_error = true;
+                        break;
+                    }
+                }
+            }
+
+            if !read_error
+                && total_read == content_len
+                && crate::flash::crc32_finalize(crc) != expected_crc
+            {
+                crate::log_msg!("OTA checksum mismatch");
+                OTA_CANCEL_SIGNAL.signal(());
+                OTA_PIPE.clear();
+                crate::flash::stop_flashing();
+                let response = "HTTP/1.1 422 Unprocessable Content\r\nContent-Length: 17\r\nConnection: close\r\n\r\nChecksum mismatch";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
                 continue;
             }
 
-            let mut flash = flash_mutex.lock().await;
-            let mut writer = crate::flash::OtaWriter::new(&mut *flash, STAGING_START_ADDR);
-
-            let body_start = headers_end + 4;
-            let initial_body_len = read_len - body_start;
-            let mut total_read = 0;
-            let mut write_error = false;
-
-            // Write initial block
-            if initial_body_len > 0 {
-                let bytes_to_process = core::cmp::min(initial_body_len, content_len);
-                if let Err(e) = writer.write_chunk(&buf[body_start..body_start + bytes_to_process]).await {
-                    warn!("Staging write error: {:?}", e);
-                    write_error = true;
-                } else {
-                    total_read += bytes_to_process;
-                }
+            if let Some(Err(())) = consumer_result {
+                crate::log_msg!("OTA Consumer failed while receiving upload");
+                crate::flash::stop_flashing();
+                let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                socket.close();
+                continue;
             }
 
-            // Read remaining data from network socket
-            let mut read_buf = [0u8; 1024];
-            while !write_error && total_read < content_len {
-                let to_read = core::cmp::min(read_buf.len(), content_len - total_read);
-                match socket.read(&mut read_buf[..to_read]).await {
-                    Ok(0) => {
-                        warn!("Socket closed early during upload");
-                        break;
-                    }
-                    Ok(n) => {
-                        if let Err(e) = writer.write_chunk(&read_buf[..n]).await {
-                            warn!("Staging write error: {:?}", e);
-                            write_error = true;
-                            break;
-                        }
-                        total_read += n;
-                        Timer::after(Duration::from_millis(1)).await;
-                    }
-                    Err(e) => {
-                        warn!("Socket read error: {:?}", e);
-                        break;
-                    }
-                }
+            if read_error || total_read < content_len {
+                crate::log_msg!(
+                    "OTA Producer read incomplete ({} / {}), cancelling Consumer",
+                    total_read,
+                    content_len
+                );
+                OTA_COMMAND_SIGNAL.signal(OtaCommand::Cancel);
+                OTA_CANCEL_SIGNAL.signal(());
+                OTA_PIPE.clear();
+                crate::flash::stop_flashing();
+                let response =
+                    "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+                socket.close();
+                continue;
             }
 
-            if !write_error && total_read == content_len {
-                if let Err(e) = writer.flush().await {
-                    warn!("Flash final write error: {:?}", e);
-                }
+            // Wait for Consumer to finish writing to Flash
+            crate::log_msg!(
+                "OTA Producer finished reading socket. Awaiting Consumer flash completion..."
+            );
+            let result = match consumer_result {
+                Some(result) => result,
+                None => OTA_RESULT_SIGNAL.wait().await,
+            };
 
+            if result.is_ok() {
                 crate::log_msg!("Staging complete! Sending success HTTP response...");
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let response = HTTP_200_SUCCESS;
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
@@ -189,65 +488,49 @@ pub async fn web_task(
                 // Wait 500ms for macOS network stack to settle after TCP close
                 Timer::after(Duration::from_millis(500)).await;
 
-                // Disable USB pull-up for 3000ms to ensure host detects clean disconnect
-                unsafe {
-                    core::ptr::write_volatile(USB_USBPULLUP, 0);
-                }
-                Timer::after(Duration::from_millis(3000)).await;
-
-                crate::log_msg!("Initiating Active Bank self-flash and system reset!");
-                unsafe {
-                    copy_and_reset(STAGING_START_ADDR, ACTIVE_START_ADDR, content_len as u32);
-                }
+                crate::log_msg!("Signed package staged; resetting into bootloader");
+                crate::flash::stop_flashing();
+                reset_after_usb_detach().await;
             } else {
-                crate::log_msg!("Upload incomplete. Expected {} but got {}", content_len, total_read);
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                crate::log_msg!("OTA Consumer failed to write to flash");
+                crate::flash::stop_flashing();
+                let response = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
                 continue;
             }
         } else if starts_with(request_line, b"GET /keyboard/state") {
-            let mut response_body = heapless::String::<512>::new();
-            let state_str = crate::ble::KEYBOARD_STATE.lock(|state| {
+            let (active_slot, bonds, pairing_mode) = crate::ble::KEYBOARD_STATE.lock(|state| {
                 let s = state.borrow();
-                let mut b = heapless::String::<256>::new();
-                let _ = b.push_str("{\"slots\":[");
-                for i in 0..3 {
-                    let active = s.active_slot == i;
-                    let bonded = s.bonds[i].is_some();
-                    let mut slot_str = heapless::String::<64>::new();
-                    let _ = core::fmt::write(&mut slot_str, format_args!(
-                        "{{\"id\":{},\"active\":{},\"bonded\":{}}}",
-                        i, active, bonded
-                    ));
-                    let _ = b.push_str(slot_str.as_str());
-                    if i < 2 {
-                        let _ = b.push_str(",");
-                    }
-                }
-                let mut end_str = heapless::String::<64>::new();
-                let _ = core::fmt::write(&mut end_str, format_args!(
-                    "],\"pairing_mode\":{}}}",
-                    s.pairing_mode
-                ));
-                let _ = b.push_str(end_str.as_str());
-                b
+                (s.active_slot, s.bonds.clone(), s.pairing_mode)
             });
-            let _ = core::fmt::write(&mut response_body, format_args!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                state_str.len(),
-                state_str.as_str()
-            ));
-            let _ = socket.write_all(response_body.as_bytes()).await;
+            let mut json_body = heapless::String::<256>::new();
+            let _ = core::fmt::write(
+                &mut json_body,
+                format_args!(
+                    "{{\"slots\":[{{\"id\":0,\"active\":{},\"bonded\":{}}},{{\"id\":1,\"active\":{},\"bonded\":{}}},{{\"id\":2,\"active\":{},\"bonded\":{}}}],\"pairing_mode\":{}}}",
+                    active_slot == 0, bonds[0].is_some(),
+                    active_slot == 1, bonds[1].is_some(),
+                    active_slot == 2, bonds[2].is_some(),
+                    pairing_mode
+                ),
+            );
+            let mut response_header = heapless::String::<128>::new();
+            let _ = core::fmt::write(
+                &mut response_header,
+                format_args!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    json_body.len()
+                ),
+            );
+            let _ = socket.write_all(response_header.as_bytes()).await;
+            let _ = socket.write_all(json_body.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
             Timer::after(Duration::from_millis(100)).await;
         } else if starts_with(request_line, b"POST /keyboard/switch") {
-            let slot_idx = if let Some(_) = find_subsequence(request_line, b"slot=0") { Some(0) }
-                           else if let Some(_) = find_subsequence(request_line, b"slot=1") { Some(1) }
-                           else if let Some(_) = find_subsequence(request_line, b"slot=2") { Some(2) }
-                           else { None };
+            let slot_idx = parse_slot(request_line);
 
             if let Some(slot) = slot_idx {
                 crate::ble::KEYBOARD_STATE.lock(|state| {
@@ -255,11 +538,15 @@ pub async fn web_task(
                     s.active_slot = slot;
                     s.pairing_mode = false;
                 });
-                let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::RestartAdvertising);
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                // Flash writes run in the dedicated persistence task. Keeping
+                // them out of this single HTTP task prevents a long NVMC/MPSL
+                // operation from making every endpoint unresponsive.
+                crate::ble::PERSIST_STATE.signal(());
+                let _ = crate::ble::try_send_command(crate::ble::BleCommand::SyncActiveBond);
+                let response = HTTP_200_SUCCESS;
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nMissing slot";
+                let response = HTTP_400_MISSING_SLOT;
                 let _ = socket.write_all(response.as_bytes()).await;
             }
             let _ = socket.flush().await;
@@ -268,37 +555,39 @@ pub async fn web_task(
         } else if starts_with(request_line, b"POST /keyboard/pair") {
             crate::ble::KEYBOARD_STATE.lock(|state| {
                 let mut s = state.borrow_mut();
+                // A host can forget this keyboard while the keyboard still
+                // retains its old LTK.  A new pairing must replace that stale
+                // key, otherwise the old connected central keeps advertising
+                // disabled and the newly-forgotten host cannot discover us.
+                let active_slot = s.active_slot;
+                s.bonds[active_slot] = None;
                 s.pairing_mode = true;
             });
-            let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::Disconnect);
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+            crate::ble::PERSIST_STATE.signal(());
+            // Do not mutate the live trouble-host security database here.
+            // Its runtime bond removal path can stall the BLE runner while a
+            // central is connected. A host that has forgotten the keyboard
+            // starts a new security procedure on its next protected HID
+            // access; PairingComplete then installs and persists that key.
+            let response = HTTP_200_SUCCESS;
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
             Timer::after(Duration::from_millis(100)).await;
         } else if starts_with(request_line, b"POST /keyboard/delete") {
-            let slot_idx = if let Some(_) = find_subsequence(request_line, b"slot=0") { Some(0) }
-                           else if let Some(_) = find_subsequence(request_line, b"slot=1") { Some(1) }
-                           else if let Some(_) = find_subsequence(request_line, b"slot=2") { Some(2) }
-                           else { None };
+            let slot_idx = parse_slot(request_line);
 
             if let Some(slot) = slot_idx {
-                let is_active = crate::ble::KEYBOARD_STATE.lock(|state| {
+                crate::ble::KEYBOARD_STATE.lock(|state| {
                     let mut s = state.borrow_mut();
                     s.bonds[slot] = None;
-                    s.active_slot == slot
                 });
-                // Erase the bond from flash so it stays in sync with the host.
-                let mut flash = flash_mutex.lock().await;
-                crate::ble::erase_bond_slot(&mut *flash, slot).await;
-                drop(flash);
-                if is_active {
-                    let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::RestartAdvertising);
-                }
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                crate::ble::PERSIST_STATE.signal(());
+                let _ = crate::ble::try_send_command(crate::ble::BleCommand::SyncActiveBond);
+                let response = HTTP_200_SUCCESS;
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nMissing slot";
+                let response = HTTP_400_MISSING_SLOT;
                 let _ = socket.write_all(response.as_bytes()).await;
             }
             let _ = socket.flush().await;
@@ -314,13 +603,18 @@ pub async fn web_task(
 
                 if initial_body_len > 0 {
                     let bytes_to_process = core::cmp::min(initial_body_len, content_len);
-                    type_buf[..bytes_to_process].copy_from_slice(&buf[body_start..body_start + bytes_to_process]);
+                    type_buf[..bytes_to_process]
+                        .copy_from_slice(&buf[body_start..body_start + bytes_to_process]);
                     total_read += bytes_to_process;
                 }
 
                 while total_read < content_len {
-                    let to_read = core::cmp::min(type_buf.len() - total_read, content_len - total_read);
-                    match socket.read(&mut type_buf[total_read..total_read + to_read]).await {
+                    let to_read =
+                        core::cmp::min(type_buf.len() - total_read, content_len - total_read);
+                    match socket
+                        .read(&mut type_buf[total_read..total_read + to_read])
+                        .await
+                    {
                         Ok(0) => break,
                         Ok(n) => total_read += n,
                         Err(_) => break,
@@ -330,11 +624,15 @@ pub async fn web_task(
                 if total_read == content_len {
                     if let Ok(s) = core::str::from_utf8(&type_buf[..total_read]) {
                         if let Ok(heap_str) = heapless::String::<128>::try_from(s) {
-                            let _ = crate::ble::BLE_COMMANDS.try_send(crate::ble::BleCommand::TypeString(heap_str));
+                            if !crate::ble::try_send_command(crate::ble::BleCommand::TypeString(
+                                heap_str,
+                            )) {
+                                crate::log_msg!("BLE command queue full during type request");
+                            }
                         }
                     }
                 }
-                let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
+                let response = HTTP_200_SUCCESS;
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nInvalid size";
@@ -343,114 +641,138 @@ pub async fn web_task(
             let _ = socket.flush().await;
             socket.close();
             Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"POST /bootloader") {
-            crate::log_msg!("Rebooting to Bootloader (UF2) via HTTP...");
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 7\r\nConnection: close\r\n\r\nSuccess";
-            let _ = socket.write_all(response.as_bytes()).await;
+        } else if starts_with(request_line, b"GET /health") {
+            let mut body = heapless::String::<192>::new();
+            let _ = core::fmt::write(
+                &mut body,
+                format_args!(
+                    "{{\"flashing\":{},\"dropped_logs\":{},\"dropped_ble_commands\":{},\"firmware_version\":{},\"slot\":{},\"ota_target_slot\":{}}}",
+                    crate::flash::IS_FLASHING.load(core::sync::atomic::Ordering::Relaxed),
+                    crate::DROPPED_LOGS.load(core::sync::atomic::Ordering::Relaxed),
+                    crate::ble::DROPPED_COMMANDS.load(core::sync::atomic::Ordering::Relaxed),
+                    crate::flash::installed_version(),
+                    running_slot(),
+                    inactive_slot(),
+                ),
+            );
+            let mut header = heapless::String::<128>::new();
+            let _ = core::fmt::write(
+                &mut header,
+                format_args!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                ),
+            );
+            let _ = socket.write_all(header.as_bytes()).await;
+            let _ = socket.write_all(body.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-
-            // Wait a bit for response to send
-            Timer::after(Duration::from_millis(500)).await;
-
-            cortex_m::peripheral::SCB::sys_reset();
         } else if starts_with(request_line, b"GET /logs") {
-            let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nConnection: close\r\n\r\n";
-            let _ = socket.write_all(headers.as_bytes()).await;
-
+            // Keep the response below the TCP send buffer. Streaming the full
+            // 32-line history (up to 4 KiB) can fill it before the peer has
+            // consumed the response, blocking this single-connection server.
             let logs = crate::get_logs();
-            for line in logs.iter() {
-                let mut formatted = heapless::String::<128>::new();
-                let _ = core::fmt::write(&mut formatted, format_args!("{}\n", line));
-                if let Err(e) = socket.write_all(formatted.as_bytes()).await {
-                    warn!("write error: {:?}", e);
+            let mut body = heapless::String::<1024>::new();
+            let first = logs.len().saturating_sub(8);
+            for line in logs.iter().skip(first) {
+                if body.push_str(line.as_str()).is_err() || body.push('\n').is_err() {
+                    break;
+                }
+            }
+
+            let mut headers = heapless::String::<128>::new();
+            let _ = core::fmt::write(
+                &mut headers,
+                format_args!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                ),
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.write_all(body.as_bytes()).await;
+            let _ = socket.flush().await;
+            socket.close();
+        } else if starts_with(request_line, b"GET / ")
+            || starts_with(request_line, b"GET /index.html")
+            || starts_with(request_line, b"GET /ble_client.html")
+        {
+            // Serve the control page and the standalone Web Bluetooth client.
+            let html = if starts_with(request_line, b"GET /ble_client.html") {
+                include_str!("../ble_client.html")
+            } else {
+                include_str!("index.html")
+            };
+            let mut headers = heapless::String::<128>::new();
+            let _ = core::fmt::write(
+                &mut headers,
+                format_args!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    html.len()
+                ),
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+            // The page is larger than the TCP send buffer. Chunking lets the
+            // network runner make forward progress between writes.
+            for chunk in html.as_bytes().chunks(1024) {
+                if socket.write_all(chunk).await.is_err() {
                     break;
                 }
             }
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(500)).await;
-        } else if starts_with(request_line, b"GET / ") || starts_with(request_line, b"GET /index.html") {
-            // Serve standard web interface page
-            let html = include_str!("index.html");
-            let headers = concat!(
-                "HTTP/1.1 200 OK\r\n",
-                "Content-Type: text/html; charset=utf-8\r\n",
-                "Connection: close\r\n",
-                "\r\n"
-            );
-
-            let _ = socket.write_all(headers.as_bytes()).await;
-            let _ = socket.write_all(html.as_bytes()).await;
-            let _ = socket.flush().await;
-            socket.close();
-            Timer::after(Duration::from_millis(500)).await;
         } else {
             // 404 Not Found
-            let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            let response =
+                "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(500)).await;
         }
     }
 }
 
 // Helper functions for raw HTTP parsing in a no_std environment
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn starts_with(data: &[u8], prefix: &[u8]) -> bool {
     data.len() >= prefix.len() && &data[..prefix.len()] == prefix
 }
 
+fn parse_slot(headers: &[u8]) -> Option<usize> {
+    if find_subsequence(headers, b"slot=0").is_some() {
+        Some(0)
+    } else if find_subsequence(headers, b"slot=1").is_some() {
+        Some(1)
+    } else if find_subsequence(headers, b"slot=2").is_some() {
+        Some(2)
+    } else {
+        None
+    }
+}
+
 fn parse_content_length(headers: &[u8]) -> Option<usize> {
-    let target = b"content-length:";
-    let mut found_idx = None;
-
-    for i in 0..headers.len() {
-        if i + 15 <= headers.len() {
-            let chunk = &headers[i..i+15];
-            let mut matched = true;
-            for j in 0..15 {
-                let mut c1 = chunk[j];
-                if c1 >= b'A' && c1 <= b'Z' {
-                    c1 = c1 - b'A' + b'a';
-                }
-                if c1 != target[j] {
-                    matched = false;
-                    break;
-                }
-            }
-            if matched {
-                found_idx = Some(i + 15);
-                break;
-            }
+    let s = core::str::from_utf8(headers).ok()?;
+    for line in s.split("\r\n") {
+        let bytes = line.as_bytes();
+        if bytes.len() >= 15 && bytes[..15].eq_ignore_ascii_case(b"content-length:") {
+            return line[15..].trim().parse().ok();
         }
     }
+    None
+}
 
-    let start = found_idx?;
-
-    let mut len = 0;
-    let mut found_digit = false;
-    for &c in &headers[start..] {
-        if c >= b'0' && c <= b'9' {
-            len = len * 10 + (c - b'0') as usize;
-            found_digit = true;
-        } else if c == b'\r' || c == b'\n' {
-            if found_digit {
-                return Some(len);
-            }
-        } else if c == b' ' || c == b':' {
-            continue;
-        } else {
-            if found_digit {
-                return Some(len);
-            }
-            return None;
+fn parse_hex_u32_header(headers: &[u8], name: &[u8]) -> Option<u32> {
+    let s = core::str::from_utf8(headers).ok()?;
+    for line in s.split("\r\n") {
+        let bytes = line.as_bytes();
+        if bytes.len() >= name.len() && bytes[..name.len()].eq_ignore_ascii_case(name) {
+            let value = line[name.len()..].trim().trim_start_matches("0x");
+            return u32::from_str_radix(value, 16).ok();
         }
     }
-
-    if found_digit { Some(len) } else { None }
+    None
 }

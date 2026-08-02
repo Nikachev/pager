@@ -282,7 +282,7 @@
     <div class="status-badge" id="status-badge">
       <span class="status-dot"></span><span id="status-text">Disconnected</span>
     </div>
-    <h1>nice!nano v2</h1>
+    <h1>TrouBLE-Pager</h1>
     <p class="subtitle">Wireless BLE Control Panel using Web Bluetooth API.</p>
 
     <button class="btn" id="connect-btn">Connect via Bluetooth</button>
@@ -344,7 +344,14 @@
       const timeStr = now.toTimeString().split(' ')[0];
       const entry = document.createElement('div');
       entry.className = 'log-entry';
-      entry.innerHTML = `<span class="log-time">[${timeStr}]</span><span class="log-${type}">${message}</span>`;
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'log-time';
+      timeSpan.textContent = `[${timeStr}]`;
+      const msgSpan = document.createElement('span');
+      msgSpan.className = `log-${type}`;
+      msgSpan.textContent = message;
+      entry.appendChild(timeSpan);
+      entry.appendChild(msgSpan);
       consoleLog.appendChild(entry);
       consoleLog.scrollTop = consoleLog.scrollHeight;
     }
@@ -352,9 +359,11 @@
     connectBtn.addEventListener('click', async () => {
       try {
         log('Requesting Bluetooth Device...');
+        // Filter by the advertised, project-specific service rather than a
+        // display name. This excludes stale macOS/browser entries left over
+        // from development BLE addresses and selects only this firmware.
         bleDevice = await navigator.bluetooth.requestDevice({
-          filters: [{ name: 'nice_nano' }],
-          optionalServices: [SERVICE_UUID]
+          filters: [{ services: [SERVICE_UUID] }]
         });
 
         log(`Found device: ${bleDevice.name}. Connecting...`);

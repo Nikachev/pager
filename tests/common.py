@@ -16,19 +16,25 @@ import urllib.request
 # Hardware / device constants
 # ---------------------------------------------------------------------------
 
+import os
 import glob
 
 def find_serial_port():
+    env_port = os.getenv("SERIAL_PORT") or os.getenv("PORT")
+    if env_port:
+        return env_port
     ports = glob.glob("/dev/cu.usbmodem*")
-    return ports[0] if ports else "/dev/cu.usbmodem1103"
+    if not ports:
+        raise RuntimeError("No matching /dev/cu.usbmodem* serial port found")
+    return ports[0]
 
-DEFAULT_PORT = find_serial_port()
+# Keep import side-effect free so HTTP-only/unit tests can run without a board.
+# Call `find_serial_port()` from fixtures or the test that actually needs CDC.
+DEFAULT_PORT = os.getenv("SERIAL_PORT") or os.getenv("PORT")
 
 # Static IPv4 assigned to the board's CDC-NCM interface (see main.rs IP_ADDRESS).
-DEFAULT_BASE_URL = "http://192.168.42.1"
-
-# UF2 mass-storage volume mounted when the board is in bootloader/UF2 mode.
-UF2_VOLUME = "/Volumes/NICENANO"
+DEFAULT_IP = os.getenv("DEVICE_IP", "192.168.42.1")
+DEFAULT_BASE_URL = os.getenv("DEVICE_URL", f"http://{DEFAULT_IP}")
 
 # Custom 128-bit GATT service and its characteristics (see ble.rs CustomService).
 SERVICE_UUID = "9e7a0001-0b3e-46e8-ad30-7746bad7128a"
@@ -47,7 +53,7 @@ BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
 
 # Subsystem log markers emitted by log_msg!() in the firmware. Used to assert
 # that the /logs endpoint returns meaningful (not empty/garbage) content.
-LOG_MARKERS = ("Web server", "BLE", "DHCP", "serial logger")
+LOG_MARKERS = ("Web server", "BLE", "DHCP", "SERIAL:", "System heartbeat")
 
 
 # ---------------------------------------------------------------------------
@@ -55,12 +61,8 @@ LOG_MARKERS = ("Web server", "BLE", "DHCP", "serial logger")
 # ---------------------------------------------------------------------------
 
 def run_async(coro):
-    """Run an async coroutine to completion inside synchronous unittest code."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    """Run an async coroutine to completion inside synchronous test code."""
+    return asyncio.run(coro)
 
 
 def find_ncm_interface():
@@ -95,17 +97,17 @@ def ncm_up():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(["sudo", "-n", "ifconfig", iface, "192.168.42.2", "netmask", "255.255.255.0", "up"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(1.0)
+        time.sleep(3.0)
     except Exception:
         pass
 
 
 def ensure_ncm_up():
-    """Bring the NCM host interface back up only if IP is missing."""
+    """Bring the NCM host interface back up if IP is missing or interface is inactive."""
     iface = find_ncm_interface()
     try:
         out = subprocess.check_output(["ifconfig", iface], text=True, stderr=subprocess.DEVNULL)
-        if "192.168.42.2" in out:
+        if "192.168.42.2" in out and "status: active" in out:
             return
     except Exception:
         pass
@@ -124,7 +126,7 @@ def wait_for_http_reconnect(url, timeout=30):
                 return True
         except Exception:
             pass
-        time.sleep(0.5)
+        time.sleep(0.4)
     return False
 
 
@@ -133,14 +135,27 @@ def wait_for_serial_reconnect(port=None, timeout=20):
     import serial
     start = time.time()
     while time.time() - start < timeout:
-        actual_port = find_serial_port()
+        actual_port = port or find_serial_port()
         try:
             s = serial.Serial(actual_port, 115200, timeout=1)
             s.close()
             return True
         except Exception:
             pass
-        time.sleep(1.0)
+        time.sleep(0.5)
+    return False
+
+
+def wait_for_serial_disconnect(port, timeout=10):
+    """Wait until the pre-reset CDC device has actually disappeared."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            s = serial.Serial(port, 115200, timeout=0.2)
+            s.close()
+        except Exception:
+            return True
+        time.sleep(0.1)
     return False
 
 
@@ -246,13 +261,15 @@ async def find_ble_device(service_uuid, timeout=3.0):
     # Imported lazily so standalone scripts (flash_device.py, etc.) that only
     # need the helpers/constants here don't pay for pulling in bleak.
     from bleak import BleakScanner
-    device = await BleakScanner.find_device_by_filter(
-        lambda d, adv: service_uuid.lower() in [u.lower() for u in adv.service_uuids],
-        timeout=timeout,
-    )
-    if device is None:
-        raise RuntimeError("Could not find BLE device advertising the service UUID")
-    return device
+
+    # On macOS, `find_device_by_filter` can miss advertisements that a normal
+    # discovery scan receives. Filter the complete discovery result ourselves.
+    discovered = await BleakScanner.discover(timeout=timeout, return_adv=True)
+    wanted = service_uuid.lower()
+    for device, advertisement in discovered.values():
+        if wanted in [uuid.lower() for uuid in advertisement.service_uuids]:
+            return device
+    raise RuntimeError("Could not find BLE device advertising the service UUID")
 
 
 # ---------------------------------------------------------------------------
@@ -266,7 +283,7 @@ def http_host_port(base_url=DEFAULT_BASE_URL):
     return host, 80
 
 
-def http_request(method, path, data=None, headers=None, retries=3, timeout=10):
+def http_request(method, path, data=None, headers=None, retries=4, timeout=5):
     """urllib-based GET/POST that survives the flaky macOS CDC-NCM link.
 
     The virtual Ethernet interface (en2) occasionally drops — especially after a
@@ -288,15 +305,17 @@ def http_request(method, path, data=None, headers=None, retries=3, timeout=10):
             raise
         except Exception as e:
             last_exc = e
+            # An interface may still claim to be "active" while the NCM
+            # peer drops a TCP SYN after a BLE link transition. Reconfigure
+            # it eagerly instead of waiting until the final attempt.
+            ncm_up()
             time.sleep(0.4)
-            if attempt >= 2:
-                ensure_ncm_up()
     raise last_exc
 
 
 def raw_http_request(host, port, method, path, body=b"", extra_headers=None,
                      include_content_length=True, body_send_limit=None,
-                     close_after_body=False, content_length=None, retries=2):
+                     close_after_body=False, content_length=None, retries=5):
     """Send a raw HTTP request, optionally omitting/truncating Content-Length.
 
     ``urllib`` always adds Content-Length and sends the full body, so it cannot
@@ -317,6 +336,8 @@ def raw_http_request(host, port, method, path, body=b"", extra_headers=None,
     import http.client
     last_exc = None
     for attempt in range(retries):
+        if attempt > 0:
+            time.sleep(0.3)
         conn = http.client.HTTPConnection(host, port, timeout=15)
         try:
             conn.connect()
@@ -330,14 +351,19 @@ def raw_http_request(host, port, method, path, body=b"", extra_headers=None,
             conn.endheaders()
             to_send = body if body_send_limit is None else body[:body_send_limit]
             if to_send:
-                conn.send(to_send)
+                try:
+                    conn.send(to_send)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
             if close_after_body:
                 conn.close()
+                time.sleep(0.2)
                 return None, ""
             resp = conn.getresponse()
             status = resp.status
             data = resp.read().decode("utf-8", errors="ignore")
             conn.close()
+            time.sleep(0.2)
             return status, data
         except (ConnectionRefusedError, BrokenPipeError, OSError) as e:
             last_exc = e
@@ -347,7 +373,7 @@ def raw_http_request(host, port, method, path, body=b"", extra_headers=None,
                 pass
             ensure_ncm_up()
             if attempt < retries - 1:
-                wait_for_http_reconnect(f"http://{host}:{port}{path}", timeout=30)
+                wait_for_http_reconnect(f"http://{host}:{port}/logs", timeout=5)
         except Exception:
             try:
                 conn.close()

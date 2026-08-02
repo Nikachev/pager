@@ -1,7 +1,14 @@
 /target
+/bootloader/target
 /dist
 .DS_Store
 .pytest_cache
 __pycache__/
 *.pyc
 s140_nrf52_7.3.0_softdevice.hex
+.env
+keys/
+*.uf2
+venv/
+.venv/
+.DS_Store

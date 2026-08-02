@@ -1,11 +1,15 @@
 import os
 import time
 import json
+import socket
 import asyncio
+import subprocess
+import sys
 import serial
 import urllib.request
 import urllib.error
 import http.client
+import zlib
 import pytest
 from bleak import BleakClient
 
@@ -17,6 +21,7 @@ from common import (
     ensure_ncm_up,
     wait_for_http_reconnect,
     wait_for_serial_reconnect,
+    wait_for_serial_disconnect,
     find_ble_device,
     raw_http_request,
     http_host_port,
@@ -34,7 +39,6 @@ from common import (
     LOG_MARKERS,
     DEFAULT_PORT,
     DEFAULT_BASE_URL,
-    UF2_VOLUME,
     _expected_hid_report,
 )
 
@@ -45,29 +49,106 @@ def _dist_path(name):
     return os.path.join(_REPO_ROOT, "dist", name)
 
 
-def _ensure_app_mode():
-    """Best-effort: bring the board to a known-good baseline."""
-    if os.path.exists(UF2_VOLUME) and os.path.exists(_dist_path("pager.uf2")):
-        os.system(f"cp -X {_dist_path('pager.uf2')} {UF2_VOLUME}/ >/dev/null 2>&1")
-        wait_for_serial_reconnect(DEFAULT_PORT, timeout=15)
-    ensure_ncm_up()
+def _make_dfu_package(name):
+    """Create a newer package for the slot currently inactive on the board."""
+    version_path = _dist_path(".dfu-test-version")
     try:
-        urllib.request.urlopen(
-            urllib.request.Request(f"{DEFAULT_BASE_URL}/keyboard/switch?slot=0", method="POST"),
-            timeout=5,
-        )
-    except Exception:
-        pass
+        previous = int(open(version_path, encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        previous = 0
+    version = max(int(time.time()) + 10, previous + 1)
+    with open(version_path, "w", encoding="utf-8") as f:
+        f.write(str(version))
+
+    health = json.loads(http_request("GET", "/health").read().decode("utf-8"))
+    target_slot = "A" if health["ota_target_slot"] == 0 else "B"
+    # Never reuse an artifact left by an HIL fault-injection run. DFU tests
+    # must always install a normal image that confirms its trial and feeds WDT.
+    subprocess.run(
+        [
+            "make",
+            "build",
+            f"SLOT={target_slot}",
+            "TRIAL_NO_CONFIRM=0",
+            "WATCHDOG_NO_FEED=0",
+        ],
+        cwd=_REPO_ROOT,
+        check=True,
+    )
+    image = _dist_path(f"pager-{target_slot}.bin")
+    output = _dist_path(name)
+    subprocess.run(
+        [
+            sys.executable,
+            os.path.join(_REPO_ROOT, "scripts", "sign_firmware.py"),
+            image,
+            "--version",
+            str(version),
+            "--slot",
+            target_slot,
+            "--output",
+            output,
+        ],
+        check=True,
+    )
+    return output
+
+
+def _ota_headers(host, port, binary_data):
+    return (
+        f"POST /update HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        f"Content-Type: application/octet-stream\r\n"
+        f"Content-Length: {len(binary_data)}\r\n"
+        f"X-Pager-CRC32: {zlib.crc32(binary_data):08x}\r\n"
+        f"Connection: close\r\n\r\n"
+    ).encode("utf-8")
+
+
+def _ensure_transport():
+    """Bring the host-side NCM interface up without changing board state."""
+    ensure_ncm_up()
+
+
+async def _pair_current_slot_if_needed(force=False):
+    """Trigger macOS Just Works pairing through the protected HID report.
+
+    CoreBluetooth intentionally has no API for accepting a passkey dialog. On
+    a Just Works link this read completes the pairing without UI; otherwise the
+    test leaves the native macOS dialog visible for Computer Use/the developer.
+    """
+    state = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
+    active_slot = next(slot for slot in state["slots"] if slot["active"])
+    if active_slot["bonded"] and not force:
+        return
+    # Send an explicit zero-length body. This matches fetch() in the web UI
+    # and keeps the embedded HTTP parser from waiting for a POST body.
+    http_request("POST", "/keyboard/pair", data=b"").read()
+    device = await find_ble_device(SERVICE_UUID, timeout=10.0)
+    async with BleakClient(device, timeout=20.0) as client:
+        assert client.is_connected, "Failed to connect while requesting pairing"
+        try:
+            await client.read_gatt_char(HID_INPUT_REPORT_UUID)
+        except Exception:
+            # macOS may finish the security procedure after the protected read
+            # returns its ATT error; state polling below is authoritative.
+            pass
+        for _ in range(20):
+            await asyncio.sleep(0.5)
+            state = json.loads((await asyncio.to_thread(lambda: http_request("GET", "/keyboard/state").read())).decode("utf-8"))
+            if any(slot["active"] and slot["bonded"] for slot in state["slots"]):
+                return
+    raise RuntimeError("macOS did not complete HID pairing for the active slot")
 
 
 @pytest.fixture(scope="session", autouse=True)
 def app_baseline():
-    """Ensure the board starts and ends in application mode with slot 0 active."""
-    print("\n=== Test suite setup: restoring board to application mode, slot 0 ===")
-    _ensure_app_mode()
+    """Ensure the host transport is configured without issuing mutating requests."""
+    print("\n=== Test suite setup: configuring NCM transport ===")
+    _ensure_transport()
     yield
-    print("\n=== Test suite teardown: restoring board to application mode, slot 0 ===")
-    _ensure_app_mode()
+    print("\n=== Test suite teardown: checking NCM transport ===")
+    _ensure_transport()
 
 
 @pytest.fixture
@@ -130,8 +211,10 @@ def test_ble_functionality():
 
     try:
         run_async(run_ble_test())
-    except Exception as e:
-        pytest.skip(f"BLE test skipped (device unavailable / likely connected to host): {e}")
+    except RuntimeError as e:
+        if "Could not find BLE device" in str(e):
+            pytest.skip(f"BLE test skipped (device already connected): {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -144,20 +227,30 @@ def test_serial_logs(serial_port):
     print("\n--- Running Serial Logs Test ---")
     assert serial_port, "Serial port not found"
     try:
-        s = serial.Serial(serial_port, 115200, timeout=3)
+        # Opening CDC with DTR asserted can reset some USB bridge/board setups.
+        # Configure the line state before opening so this diagnostic does not
+        # disrupt the NCM interface used by the rest of the smoke suite.
+        s = serial.Serial(port=None, baudrate=115200, timeout=1)
+        s.dtr = False
+        s.rts = False
+        s.port = serial_port
+        s.open()
+        time.sleep(0.1)
+        s.reset_input_buffer()
+        # Keep this smoke test non-destructive: pairing and typing change BLE
+        # state and can make the following HTTP tests depend on host timing.
+        s.write(b"ping\n")
+
         lines = []
-        for _ in range(30):
-            line = s.readline().decode('utf-8', errors='ignore')
+        start = time.time()
+        while time.time() - start < 1.5 and not lines:
+            line = s.readline().decode('utf-8', errors='ignore').strip()
             if line:
-                lines.append(line.strip())
-                if len(lines) >= 5:
-                    break
-            else:
-                break
+                lines.append(line)
         s.close()
         print("Received serial lines:")
         print("\n".join(lines))
-        assert len(lines) > 0, "No lines received from serial stream"
+        assert "SERIAL:PONG" in lines, f"Expected SERIAL:PONG from serial stream, got {lines}"
     except Exception as e:
         pytest.fail(f"Serial port failed: {e}")
 
@@ -167,36 +260,33 @@ def test_serial_update(serial_port):
     """Test firmware update over Serial"""
     print("\n--- Running Serial Update Test ---")
     assert serial_port, "Serial port not found"
-    bin_path = _dist_path("pager.bin")
-    if not os.path.exists(bin_path):
-        pytest.skip(f"Binary {bin_path} not found. Build the firmware first.")
-
-    with open(bin_path, "rb") as f:
-        binary_data = f.read()
-
     try:
-        s = serial.Serial(serial_port, 115200, timeout=5)
-        cmd = f"update {len(binary_data)}\n".encode('utf-8')
-        print(f"Sending serial command: {cmd.strip().decode()}")
-        s.write(cmd)
-        time.sleep(0.5)
-
-        print("Board receiving DFU. Streaming binary chunks...")
-        chunk_size = 512
-        for i in range(0, len(binary_data), chunk_size):
-            s.write(binary_data[i:i+chunk_size])
-
-        s.close()
+        package = _make_dfu_package("pager.serial-test.pkg")
+        result = subprocess.run(
+            [sys.executable, os.path.join(_REPO_ROOT, "scripts", "flash_serial.py"), serial_port, package],
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PAGER_HIL_LOCK_HELD": "1"},
+            timeout=90,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
         print("Serial update upload finished! Waiting for board to perform self-flash reset...")
 
         ncm_down()
 
-        reconnected = wait_for_serial_reconnect(serial_port, timeout=30)
-        assert reconnected, "Board did not reconnect after serial update"
+        try:
+            assert wait_for_serial_disconnect(serial_port, timeout=10), (
+                "Board did not detach CDC before serial OTA reset"
+            )
+            reconnected = wait_for_serial_reconnect(serial_port, timeout=30)
+            assert reconnected, "Board did not reconnect after serial update"
 
-        http_online = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=30)
-        assert http_online, "HTTP server did not come online after serial update"
-        print("Board successfully reconnected after serial update!")
+            ncm_up()
+            http_online = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=30)
+            assert http_online, "HTTP server did not come online after serial update"
+            print("Board successfully reconnected after serial update!")
+        finally:
+            ensure_ncm_up()
     except Exception as e:
         pytest.fail(f"Serial update failed: {e}")
 
@@ -209,10 +299,13 @@ def test_serial_update(serial_port):
 def test_http_logs():
     """Test retrieving logs over HTTP"""
     print("\n--- Running HTTP Logs Test ---")
-    wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=90)
+    assert wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=8), (
+        "HTTP endpoint did not become ready within 8 seconds"
+    )
     try:
-        res = http_request("GET", "/logs")
+        res = http_request("GET", "/logs", retries=1, timeout=3)
         assert res.status == 200
+        assert "text/plain" in res.headers.get("Content-Type", ""), "Expected text/plain Content-Type"
         data = res.read().decode('utf-8')
         print("Logs received:")
         print("\n".join(data.split("\n")[-10:]))
@@ -225,12 +318,80 @@ def test_http_logs():
 
 
 @pytest.mark.smoke
+def test_health():
+    """GET /health exposes OTA and queue-pressure diagnostics."""
+    res = http_request("GET", "/health")
+    assert res.status == 200
+    health = json.loads(res.read().decode("utf-8"))
+    assert set(health) == {
+        "flashing",
+        "dropped_logs",
+        "dropped_ble_commands",
+        "firmware_version",
+        "slot",
+        "ota_target_slot",
+    }
+    assert health["flashing"] is False
+    assert isinstance(health["firmware_version"], int)
+    assert health["slot"] in (0, 1)
+    assert health["ota_target_slot"] == 1 - health["slot"]
+
+
+@pytest.mark.dfu
 def test_http_update():
     """Test firmware update over HTTP using the compiled binary"""
-    pytest.skip("HTTP OTA update skipped; firmware uses USB Serial DFU update (`update <bytes>`).")
+    print("\n--- Running HTTP OTA Update Test ---")
+    with open(_make_dfu_package("pager.http-test.pkg"), "rb") as f:
+        binary_data = f.read()
+
+    host, port = http_host_port(DEFAULT_BASE_URL)
+    last_exception = None
+
+    for attempt in range(1, 4):
+        try:
+            wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=25)
+            time.sleep(1.0)
+
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(60)
+            s.connect((host, port))
+
+            headers = _ota_headers(host, port, binary_data)
+
+            s.sendall(headers)
+
+            chunk_size = 4096
+            for i in range(0, len(binary_data), chunk_size):
+                chunk = binary_data[i:i + chunk_size]
+                s.sendall(chunk)
+
+            resp = s.recv(1024).decode("utf-8", errors="ignore")
+            s.close()
+            assert "200" in resp, f"Expected 200 OK, got: {resp}"
+            print("HTTP OTA update accepted! Board will self-flash and reset...")
+
+            ncm_down()
+
+            try:
+                # Firmware detaches USB for 3 seconds before resetting. Do
+                # not reconfigure macOS against the still-old NCM endpoint.
+                time.sleep(4.0)
+                ncm_up()
+                http_online = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=30)
+                assert http_online, "HTTP server did not come online after HTTP OTA update"
+                print("Board successfully reconnected after HTTP OTA update!")
+                return
+            finally:
+                ensure_ncm_up()
+        except Exception as e:
+            print(f"HTTP OTA attempt {attempt} failed: {e}")
+            last_exception = e
+            time.sleep(2.0)
+
+    pytest.fail(f"HTTP OTA update failed after 3 attempts: {last_exception}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_state():
     """Test getting current keyboard state"""
     print("\n--- Running GET /keyboard/state Test ---")
@@ -250,7 +411,7 @@ def test_keyboard_state():
         pytest.fail(f"GET /keyboard/state failed: {e}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_switch():
     """Test switching slots"""
     print("\n--- Running POST /keyboard/switch Test ---")
@@ -270,7 +431,24 @@ def test_keyboard_switch():
         http_request("POST", "/keyboard/switch?slot=0")
 
 
-@pytest.mark.smoke
+@pytest.mark.ble
+def test_single_host_profile_slot_isolation():
+    """A single Mac can verify selection without pretending to be 3 hosts."""
+    before = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
+    original = next(slot["id"] for slot in before["slots"] if slot["active"])
+    try:
+        for slot in (1, 2, original):
+            response = http_request("POST", f"/keyboard/switch?slot={slot}")
+            assert response.read().decode("utf-8") == "Success"
+            state = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
+            assert state["slots"][slot]["active"], f"Slot {slot} was not selected"
+        restored = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
+        assert restored["slots"][original]["bonded"] == before["slots"][original]["bonded"]
+    finally:
+        http_request("POST", f"/keyboard/switch?slot={original}").read()
+
+
+@pytest.mark.contract
 def test_keyboard_pair():
     """Test entering pairing mode"""
     print("\n--- Running POST /keyboard/pair Test ---")
@@ -297,7 +475,7 @@ def test_keyboard_pair():
         http_request("POST", "/keyboard/switch?slot=0")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_delete():
     """Test deleting a slot bond"""
     print("\n--- Running POST /keyboard/delete Test ---")
@@ -311,7 +489,8 @@ def test_keyboard_delete():
         pytest.fail(f"POST /keyboard/delete failed: {e}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
+@pytest.mark.ble
 def test_keyboard_type():
     """Test typing emulation over HTTP and verify the emitted HID reports."""
     print("\n--- Running POST /keyboard/type Test ---")
@@ -380,8 +559,10 @@ def test_keyboard_type():
 
     try:
         run_async(run_type_ble_test())
-    except Exception as e:
-        pytest.skip(f"BLE HID verification skipped (device unavailable/connected): {e}")
+    except RuntimeError as e:
+        if "Could not find BLE device" in str(e):
+            pytest.skip(f"BLE HID verification skipped (device already connected): {e}")
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +608,7 @@ def test_not_found():
         pytest.fail(f"404 request failed unexpectedly: {e}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_update_missing_content_length():
     """POST /update without Content-Length is rejected with 411."""
     print("\n--- Running POST /update (missing Content-Length) Test ---")
@@ -439,27 +620,55 @@ def test_update_missing_content_length():
     assert status == 411, "Server should require Content-Length (411)"
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_update_oversized():
-    """POST /update larger than 400KB is rejected with 400."""
+    """POST /update larger than the 488KB staging slot is rejected with 400."""
     print("\n--- Running POST /update (oversized) Test ---")
     host, port = http_host_port(DEFAULT_BASE_URL)
     status, _ = raw_http_request(
         host, port, "POST", "/update", body=b"",
-        content_length=409600 + 1,
+        content_length=499712 + 1,
         extra_headers={"Content-Type": "application/octet-stream"},
     )
     assert status == 400, "Server should reject oversized upload (400)"
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
+def test_update_missing_checksum():
+    """POST /update without X-Pager-CRC32 is rejected before staging."""
+    host, port = http_host_port(DEFAULT_BASE_URL)
+    status, _ = raw_http_request(host, port, "POST", "/update", body=b"firmware")
+    assert status == 400
+
+
+@pytest.mark.contract
+def test_update_bad_checksum():
+    """A complete upload with a wrong CRC must never be activated."""
+    host, port = http_host_port(DEFAULT_BASE_URL)
+    payload = b"firmware"
+    status, data = raw_http_request(
+        host,
+        port,
+        "POST",
+        "/update",
+        body=payload,
+        extra_headers={"X-Pager-CRC32": "00000000"},
+    )
+    assert status == 422
+    assert "Checksum mismatch" in data
+
+
+@pytest.mark.contract
 def test_update_truncated():
     """A truncated upload (claimed length > sent bytes) must not crash the server."""
     print("\n--- Running POST /update (truncated) Test ---")
     host, port = http_host_port(DEFAULT_BASE_URL)
     raw_http_request(
         host, port, "POST", "/update", body=b"X" * 100,
-        extra_headers={"Content-Type": "application/octet-stream"},
+        extra_headers={
+            "Content-Type": "application/octet-stream",
+            "X-Pager-CRC32": f"{zlib.crc32(b'X' * 100):08x}",
+        },
         body_send_limit=50, close_after_body=True,
     )
     alive = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/logs", timeout=90)
@@ -467,7 +676,7 @@ def test_update_truncated():
     time.sleep(0.5)
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_switch_invalid_slot():
     """POST /keyboard/switch with an unknown slot returns 400 'Missing slot'."""
     print("\n--- Running POST /keyboard/switch (invalid slot) Test ---")
@@ -482,7 +691,7 @@ def test_keyboard_switch_invalid_slot():
         pytest.fail(f"Invalid-slot switch request failed: {e}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_delete_invalid_slot():
     """POST /keyboard/delete with an unknown slot returns 400 'Missing slot'."""
     print("\n--- Running POST /keyboard/delete (invalid slot) Test ---")
@@ -497,7 +706,7 @@ def test_keyboard_delete_invalid_slot():
         pytest.fail(f"Invalid-slot delete request failed: {e}")
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_keyboard_type_invalid_size():
     """POST /keyboard/type with empty or >128-byte body returns 400 'Invalid size'."""
     print("\n--- Running POST /keyboard/type (invalid size) Test ---")
@@ -511,7 +720,7 @@ def test_keyboard_type_invalid_size():
         assert "Invalid size" in data
 
 
-@pytest.mark.smoke
+@pytest.mark.contract
 def test_serial_update_invalid_size(serial_port):
     """A serial 'update ' with an invalid size is rejected with ERROR_INVALID_SIZE."""
     print("\n--- Running serial 'update' (invalid size) Test ---")
@@ -538,9 +747,12 @@ def test_serial_update_invalid_size(serial_port):
 
 
 @pytest.mark.ble
-def test_dis_battery_hid_metadata():
-    """Read-only BLE GATT service checks (DIS, Battery, HID metadata, LED modes)."""
-    print("\n--- Running BLE DIS/Battery/HID metadata Test ---")
+def test_hid_metadata_and_boot_input_report():
+    """Keep all BLE assertions in one connection so macOS cannot preempt it."""
+    print("\n--- Running continuous BLE HID metadata/Boot Input Test ---")
+    # DIS, Battery and HID discovery metadata are deliberately public: they
+    # must be usable by macOS before it decides to pair the keyboard.
+    run_async(_pair_current_slot_if_needed())
 
     async def run_services_test():
         device = await find_ble_device(SERVICE_UUID)
@@ -552,13 +764,13 @@ def test_dis_battery_hid_metadata():
 
             assert DIS_SERVICE_UUID.lower() in uuids, "DIS service (0x180A) not found"
             manufacturer = await client.read_gatt_char("00002a29-0000-1000-8000-00805f9b34fb")
-            assert manufacturer.decode("utf-8", "ignore") == "Embassy"
+            assert manufacturer.decode("utf-8", "ignore") == "Antigravity"
             model = await client.read_gatt_char("00002a24-0000-1000-8000-00805f9b34fb")
             assert model.decode("utf-8", "ignore") == "nice_nano_v2"
 
             assert BATTERY_SERVICE_UUID.lower() in uuids, "Battery service (0x180F) not found"
             battery = await client.read_gatt_char("00002a19-0000-1000-8000-00805f9b34fb")
-            assert battery[0] == 100, "Battery level should report 100"
+            assert battery[0] == 13, "Battery placeholder should report 13%"
 
             report_map = await client.read_gatt_char(HID_REPORT_MAP_UUID)
             assert len(report_map) > 0, "HID Report Map is empty"
@@ -573,31 +785,12 @@ def test_dis_battery_hid_metadata():
 
             for mode_byte in (0x00, 0x01, 0x02):
                 await client.write_gatt_char(LED_CHAR_UUID, bytearray([mode_byte]))
+            received = []
+            done = asyncio.Event()
 
-    try:
-        run_async(run_services_test())
-    except Exception as e:
-        pytest.skip(f"BLE service test skipped (device unavailable): {e}")
-
-
-@pytest.mark.ble
-def test_boot_input_report():
-    """Test receiving boot input report over BLE."""
-    print("\n--- Running BLE Boot Keyboard Input Report Test ---")
-
-    async def run_boot_report_test():
-        device = await find_ble_device(SERVICE_UUID)
-        received = []
-        done = asyncio.Event()
-
-        def boot_callback(sender, data):
-            received.append(bytes(data))
-            if len(received) >= 1:
+            def boot_callback(sender, data):
+                received.append(bytes(data))
                 done.set()
-
-        async with BleakClient(device, timeout=20.0) as client:
-            assert client.is_connected, "Failed to connect for boot report test"
-
             await client.write_gatt_char(HID_PROTOCOL_MODE_UUID, bytearray([0x00]))
             try:
                 await client.start_notify(HID_BOOT_INPUT_REPORT_UUID, boot_callback)
@@ -626,12 +819,15 @@ def test_boot_input_report():
                 await client.write_gatt_char(HID_PROTOCOL_MODE_UUID, bytearray([0x01]))
 
     try:
-        run_async(run_boot_report_test())
-    except Exception as e:
-        pytest.skip(f"BLE boot report test skipped (device unavailable): {e}")
+        run_async(run_services_test())
+    except RuntimeError as e:
+        if "Could not find BLE device" in str(e):
+            pytest.skip(f"BLE session skipped (device already connected): {e}")
+        raise
 
 
 @pytest.mark.ble
+@pytest.mark.dfu
 def test_bond_survives_reboot(serial_port):
     """Verify a bonded slot survives a reboot."""
     print("\n--- Running Bond Persistence Across Reboot Test ---")
@@ -644,26 +840,35 @@ def test_bond_survives_reboot(serial_port):
     except Exception as e:
         pytest.fail(f"GET /keyboard/state failed: {e}")
 
+    if not any(slot["bonded"] for slot in before["slots"]):
+        run_async(_pair_current_slot_if_needed())
+        before = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
     bonded_before = [i for i, s in enumerate(before["slots"]) if s["bonded"]]
-    if not bonded_before:
-        pytest.skip("No bonded slot present; pair a host first to test persistence")
+    assert bonded_before, "HID pairing did not create a persistent bond"
 
-    if not os.path.exists(_dist_path("pager.uf2")):
-        pytest.skip("dist/pager.uf2 not found. Build the firmware first.")
+    with open(_make_dfu_package("pager.bond-test.pkg"), "rb") as f:
+        binary_data = f.read()
 
-    req = urllib.request.Request(f"{DEFAULT_BASE_URL}/bootloader", method="POST")
-    urllib.request.urlopen(req, timeout=5)
-    time.sleep(2.0)
-    for _ in range(10):
-        if os.path.exists(UF2_VOLUME):
-            break
-        time.sleep(1.0)
-    os.system(f"cp -X {_dist_path('pager.uf2')} {UF2_VOLUME}/ >/dev/null 2>&1")
-    assert wait_for_serial_reconnect(serial_port, timeout=15), "Board did not reconnect after reboot"
-    ncm_up()
+    host, port = http_host_port(DEFAULT_BASE_URL)
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(60)
+    s.connect((host, port))
+    headers = _ota_headers(host, port, binary_data)
+    s.sendall(headers)
+    s.sendall(binary_data)
+    resp = s.recv(1024).decode("utf-8", errors="ignore")
+    s.close()
+    assert "200" in resp, f"Expected 200 OK, got: {resp}"
 
-    reconnected = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/keyboard/state", timeout=90)
-    assert reconnected, "HTTP server did not come online after reboot"
+    ncm_down()
+    try:
+        reconnected = wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/keyboard/state", timeout=90)
+        assert reconnected, "HTTP server did not come online after reboot"
+        after = json.loads(http_request("GET", "/keyboard/state").read().decode("utf-8"))
+        assert after["slots"][bonded_before[0]]["bonded"], "Bond record was not restored after reboot"
+    finally:
+        ensure_ncm_up()
+
     try:
         res = http_request("GET", "/keyboard/state")
         after = json.loads(res.read().decode("utf-8"))
