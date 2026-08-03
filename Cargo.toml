@@ -1,9 +1,13 @@
+[workspace]
+members = [".", "xtask"]
+exclude = ["bootloader"]
+
 [package]
 name = "pager"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[target.'cfg(target_arch = "arm")'.dependencies]
 embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread", "defmt"] }
 embassy-nrf = { version = "0.11.0", features = ["defmt", "nrf52840", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
 embassy-time = { version = "0.5.1", features = ["defmt", "defmt-timestamp-uptime"] }
@@ -13,10 +17,8 @@ defmt = "1.0"
 defmt-rtt = "1.0"
 panic-probe = { version = "1.0", features = ["print-defmt"] }
 
-# USB, Networking and DHCP dependencies
+# USB and storage dependencies
 embassy-usb = { version = "0.6.0", features = ["defmt"] }
-embassy-net = { version = "0.9.1", features = ["defmt", "tcp", "udp", "medium-ethernet", "proto-ipv4"] }
-leasehund = "0.5.2"
 static_cell = "2.1.1"
 embedded-io-async = "0.7.0"
 heapless = "0.9.3"
@@ -39,3 +41,6 @@ incremental = false
 lto = "fat"
 opt-level = "z"
 overflow-checks = false
+
+[profile.release.package.sha2]
+opt-level = 3

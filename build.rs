@@ -18,9 +18,10 @@ fn main() {
         .unwrap();
     println!("cargo:rustc-link-search={}", out.display());
 
-    // Ensure compilation re-runs if memory.x changes.
+    // Ensure compilation re-runs if linker configuration or layout changes.
     println!("cargo:rerun-if-changed=memory_slot_a.x");
     println!("cargo:rerun-if-changed=memory_slot_b.x");
+    println!("cargo:rerun-if-changed=layout.json");
     println!("cargo:rerun-if-env-changed=PAGER_SLOT");
     println!("cargo:rerun-if-env-changed=PAGER_SKIP_TRIAL_CONFIRM");
     println!("cargo:rerun-if-env-changed=PAGER_SKIP_WATCHDOG_FEED");

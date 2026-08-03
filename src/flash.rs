@@ -49,13 +49,17 @@ pub async fn package_targets_slot<F: NorFlash>(
     let image_len = u32::from_le_bytes(page[16..20].try_into().unwrap()) as usize;
     let valid = valid_package_envelope(&page, package_len, expected_slot, MAX_BIN_SIZE);
     if !valid {
+        let magic = &page[4..12];
+        let non_ff = page[120..4096].iter().position(|&b| b != 0xFF);
         crate::log_msg!(
-            "OTA manifest invalid state={:x} target={} expected={} len={} package={}",
+            "OTA invalid: state={:x} magic={:?} target={} exp={} img_len={} pkg_len={} non_ff={:?}",
             state,
+            magic,
             target_slot,
             expected_slot,
             image_len,
-            package_len
+            package_len,
+            non_ff
         );
     }
     Ok(valid)
@@ -218,6 +222,7 @@ struct BootControl {
 
 /// The confirmed version is diagnostic only; package signatures and the
 /// bootloader remain the authority for which image may execute.
+#[allow(dead_code)]
 pub fn installed_version() -> u32 {
     read_boot_control_raw().map_or(0, |(_, control)| control.confirmed_version)
 }
@@ -263,6 +268,7 @@ async fn read_boot_control<F: NorFlash>(
     ))
 }
 
+#[allow(dead_code)]
 fn read_boot_control_raw() -> Option<(u32, BootControl)> {
     let first =
         unsafe { core::slice::from_raw_parts(BOOT_CONTROL_PAGE0 as *const u8, BOOT_CONTROL_LEN) };

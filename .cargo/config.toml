@@ -10,4 +10,9 @@ rustflags = [
 target = "thumbv7em-none-eabihf"
 
 [env]
-EMBASSY_EXECUTOR_TASK_ARENA_SIZE = "32768"
+# WebUSB DFU keeps framing and OTA transaction state in its async task. Leave
+# headroom for this task and the existing network/BLE tasks during trial boot.
+EMBASSY_EXECUTOR_TASK_ARENA_SIZE = "49152"
+# CDC-NCM uses two interfaces, CDC-ACM uses two, and the vendor WebUSB bulk
+# function adds a fifth. embassy-usb defaults to four and panics in Builder.
+EMBASSY_USB_MAX_INTERFACE_COUNT = "5"

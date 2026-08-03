@@ -23,9 +23,8 @@ Create a Slot A package for the first migration:
 make sign SLOT=A VERSION=1
 ```
 
-`make flash-swd-migration SLOT=A VERSION=1` erases the legacy layout and
-installs the bootloader plus the signed Slot A package. Subsequent updates use
-the inactive slot: for a confirmed A image, `make flash-http SLOT=B VERSION=2`.
+`make flash-swd` installs the bootloader and application binaries via SWD. Subsequent updates use
+the inactive slot via WebUSB (`make flash-webusb SLOT=B VERSION=2`).
 
 The measured bootloader occupies `0x78c0` bytes, leaving `0x740` bytes inside
 the 32 KiB boot partition. Keep SWD recovery available and revisit that budget

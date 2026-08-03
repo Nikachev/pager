@@ -4,12 +4,12 @@ Pytest configuration and shared fixtures for pager device integration tests.
 
 import os
 import sys
+import tempfile
 import fcntl
-import time
 import pytest
-from common import DEFAULT_BASE_URL, DEFAULT_IP, find_serial_port, http_request, wait_for_http_reconnect
+from common import find_serial_port
 
-LOCK_FILE = "/tmp/pager_hil_test.lock"
+LOCK_FILE = os.environ.get("PAGER_LOCK_FILE", os.path.join(tempfile.gettempdir(), "pager_hil_test.lock"))
 
 
 def pytest_addoption(parser):
@@ -40,9 +40,8 @@ def pytest_collection_modifyitems(config, items):
             if "dfu" in item.keywords:
                 item.add_marker(skip)
 
-    # BLE advertising stops as soon as macOS connects to the HID service.
-    # Run every USB/HTTP/OTA assertion first, then run the single continuous
-    # BLE session at the end while it owns the radio connection.
+    # Keep BLE checks last: profile contract tests may briefly switch the active
+    # slot, while BLE checks attach to the connection already owned by macOS.
     items.sort(key=lambda item: (
         "ble" in item.keywords,
         item.name == "test_serial_logs",
@@ -72,33 +71,15 @@ def repo_root():
     """Returns absolute path to the repository root directory."""
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-@pytest.fixture(scope="session")
-def device_ip():
-    """Returns target device IP address."""
-    return DEFAULT_IP
 
-@pytest.fixture(scope="session")
-def base_url():
-    """Returns target device base HTTP URL."""
-    return DEFAULT_BASE_URL
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def serial_port():
-    """Returns auto-detected or configured serial port."""
+    """Returns auto-detected or configured serial port, retrying for USB re-enumeration."""
+    import time
+    for _ in range(30):
+        port = find_serial_port()
+        if port:
+            return port
+        time.sleep(0.5)
     return find_serial_port()
-
-
-@pytest.fixture(autouse=True)
-def restore_ble_advertising(request):
-    """Release a prior BLE central before a BLE test starts scanning."""
-    if "ble" not in request.node.keywords:
-        return
-    assert wait_for_http_reconnect(f"{DEFAULT_BASE_URL}/health", timeout=20), (
-        "HTTP control plane did not recover before BLE test"
-    )
-    response = http_request("POST", "/keyboard/disconnect", retries=4, timeout=5)
-    assert response.status == 200
-    response.read()
-    # The command is consumed by the asynchronous BLE task; allow it to drop
-    # the old connection and re-enter advertising before CoreBluetooth scans.
-    time.sleep(1.0)

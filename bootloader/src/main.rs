@@ -16,9 +16,7 @@ const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    loop {
-        cortex_m::asm::wfi();
-    }
+    cortex_m::peripheral::SCB::sys_reset()
 }
 
 #[entry]

@@ -1,0 +1,262 @@
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pager — WebUSB Dashboard</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f5f6f4;color:#18201b;font:15px system-ui,-apple-system,sans-serif}
+main{max-width:620px;margin:auto;padding:22px 16px 40px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+h1{font-size:22px;margin:0;letter-spacing:-.5px}
+small,.muted{color:#68726b;font-size:13px}
+.state{font-size:13px;color:#b13a2e;font-weight:bold}
+.state:before{content:'● ';font-size:11px}
+.state.on{color:#18794e}
+section{background:#fff;border:1px solid #dfe4df;border-radius:12px;padding:16px;margin:12px 0}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#68726b;margin:0 0 12px}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+button,input[type="text"],input[type="file"]{font:inherit;padding:9px 13px;background:#fff;color:#18201b;border:1px solid #ccd5ce;border-radius:8px}
+button{cursor:pointer}
+button:hover{background:#f0f4f0}
+button:disabled{opacity:0.45;cursor:not-allowed}
+input[type="text"]{flex:1;min-width:180px}
+input[type="file"]{font-size:13px;padding:7px 10px;cursor:pointer}
+.primary{background:#1c6b48;color:#fff;border-color:#1c6b48}
+.primary:hover{background:#145738}
+.warn{color:#b13a2e;border-color:#e2b8b2}
+.warn:hover{background:#fdf2f1}
+output{display:block;font:13px ui-monospace,SFMono-Regular,monospace;color:#18794e;border:1px solid #cde0d3;background:#f3f8f4;border-radius:7px;padding:8px 12px;margin-top:10px}
+progress{width:100%;height:10px;border-radius:5px;margin-top:10px;accent-color:#1c6b48;display:none}
+pre{height:200px;overflow:auto;margin:0;border-radius:8px;background:#17211b;color:#d8e5dc;padding:12px;font:12px ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}
+.time{color:#8da392}
+.ok{color:#7fd6a7}
+.warnlog{color:#f0c675}
+.errlog{color:#f88070}
+</style>
+<main>
+  <header>
+    <div><h1>Pager WebUSB</h1><small>WebUSB & DFU Control Dashboard</small></div>
+    <span id="status" class="state">disconnected</span>
+  </header>
+
+  <section>
+    <h2>Connection</h2>
+    <div class="row">
+      <button id="connect" class="primary">Connect USB</button>
+      <button id="refresh" disabled>Refresh State</button>
+    </div>
+    <output id="profiles" style="display:none"></output>
+    <p class="muted" style="margin:10px 0 0">Serve this page over HTTPS or localhost in Google Chrome.</p>
+  </section>
+
+  <section>
+    <h2>Device & Profile Controls</h2>
+    <div class="row" style="margin-bottom:12px">
+      <button id="pair" disabled>Pair New Host</button>
+      <button id="disconnect" disabled>Disconnect BLE</button>
+      <button id="clear" class="warn" disabled>Forget Active Profile</button>
+    </div>
+    <div class="row">
+      <input id="text" placeholder="Text to type over HID..." maxlength="128">
+      <button id="type" class="primary" disabled>Type</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Firmware DFU Update</h2>
+    <div class="row">
+      <input id="file" type="file" accept=".pkg,.bin">
+      <button id="upload" class="primary" disabled>Upload Signed Update</button>
+    </div>
+    <output id="progress" style="display:none"></output>
+    <progress id="pbar" value="0" max="100"></progress>
+  </section>
+
+  <section>
+    <h2>Log Console</h2>
+    <pre id="log"><span class="time">[ready]</span> Select Connect USB to begin.</pre>
+  </section>
+</main>
+
+<script>
+const VID=0x1209,PID=0x0001,H=16,ENC=new TextEncoder(),DEC=new TextDecoder();
+let d,iface,inEp,outEp,id=1,active=0,rx=[];
+const $=x=>document.getElementById(String(x).replace(/^#/,''));
+
+function log(text,kind=''){
+  let t=new Date().toTimeString().slice(0,8),e=document.createElement('div');
+  e.innerHTML='<span class="time">['+t+']</span> ';
+  let s=document.createElement('span');
+  s.className=kind;
+  s.textContent=text;
+  e.append(s);
+  $('log').append(e);
+  $('log').scrollTop=$('log').scrollHeight
+}
+
+function setStatus(text,connected=false){
+  $('status').textContent=text;
+  $('status').className='state'+(connected?' on':'');
+}
+
+function crc32(a){let c=~0;for(const b of a){c^=b;for(let i=0;i<8;i++)c=c&1?(c>>>1)^0xedb88320:c>>>1}return(~c)>>>0}
+function frame(kind,req,p=[]){if(p.length>512)throw Error('Protocol payload too large');let a=new Uint8Array(H+p.length);a.set([80,71,82,49]);a[4]=1;a[5]=kind;let v=new DataView(a.buffer);v.setUint32(6,req,true);v.setUint16(10,p.length,true);v.setUint32(12,crc32(p),true);a.set(p,H);return a}
+
+async function recv(){
+  while(rx.length<H){let r=await d.transferIn(inEp,64);if(r.status!=='ok')throw Error('USB read failed');rx.push(...new Uint8Array(r.data.buffer))}
+  let n=rx[10]|rx[11]<<8;
+  while(rx.length<H+n){let r=await d.transferIn(inEp,64);if(r.status!=='ok')throw Error('USB read failed');rx.push(...new Uint8Array(r.data.buffer))}
+  let a=rx.splice(0,H+n),v=new DataView(Uint8Array.from(a).buffer);
+  if(crc32(a.slice(H,H+n))!==v.getUint32(12,true))throw Error('Bad response CRC');
+  return {kind:a[5],id:v.getUint32(6,true),payload:Uint8Array.from(a.slice(H,H+n))}
+}
+
+async function call(kind,p){
+  let req=id++;
+  for(let retry=0;retry<200;retry++){
+    let r=await d.transferOut(outEp,frame(kind,req,p));
+    if(r.status!=='ok')throw Error('USB write failed');
+    let busy=false;
+    for(let i=0;i<8;i++){
+      let answer=await recv();
+      if(answer.id!==req){log(`Ignoring stale WebUSB response ${answer.id}; expected ${req}`,'warnlog');continue}
+      if(answer.kind===5){if(kind===4&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
+      return answer.payload
+    }
+    if(!busy)throw Error('No matching device response');
+    await new Promise(resolve=>setTimeout(resolve,20))
+  }
+  throw Error('Device remained busy during DFU')
+}
+
+function enabled(v){['refresh','pair','disconnect','clear','type'].forEach(x=>$(x).disabled=!v)}
+
+async function state(){
+  let s=await call(1,[3]);
+  active=s[0];
+  $('profiles').style.display='block';
+  $('profiles').textContent=`Active profile ${active+1}; pairing ${s[1]?'enabled':'disabled'}; bonds:${s.slice(2).map((v,i)=>` ${i+1}:${v?'yes':'empty'}`).join('')}`;
+  log(`State updated: Profile ${active+1}, pairing ${s[1]?'on':'off'}.`,'ok')
+}
+
+$('connect').onclick=async()=>{
+  try{
+    log('Requesting WebUSB device access…');
+    d=await navigator.usb.requestDevice({filters:[{vendorId:VID,productId:PID}]});
+    await d.open();
+    if(!d.configuration)await d.selectConfiguration(1);
+    for(const i of d.configuration.interfaces){
+      let a=i.alternate;
+      if(a.interfaceClass===255&&a.endpoints.some(e=>e.direction==='in')&&a.endpoints.some(e=>e.direction==='out')){
+        iface=i.interfaceNumber;
+        inEp=a.endpoints.find(e=>e.direction==='in').endpointNumber;
+        outEp=a.endpoints.find(e=>e.direction==='out').endpointNumber;
+        break
+      }
+    }
+    if(iface===undefined)throw Error('Pager WebUSB interface not found');
+    await d.claimInterface(iface);
+    enabled(true);
+    let fileInput=$('file');
+    let hasFile=fileInput&&fileInput.files&&fileInput.files.length>0;
+    if($('upload'))$('upload').disabled=!hasFile;
+    setStatus('connected',true);
+    log('Connected to Pager over WebUSB.','ok');
+    await state()
+  }catch(e){
+    setStatus('disconnected',false);
+    log(`Connect failed: ${e.message||e}`,'errlog')
+  }
+};
+
+$('refresh').onclick=()=>state().catch(e=>log(e.message,'errlog'));
+$('pair').onclick=async()=>{
+  try{
+    await call(1,[5]);
+    log('Pairing mode enabled for active profile.','ok');
+    await state()
+  }catch(e){
+    log(`Pairing failed: ${e.message||e}`,'errlog')
+  }
+};
+$('disconnect').onclick=async()=>{
+  try{
+    await call(1,[6]);
+    log('BLE disconnect command sent.','ok')
+  }catch(e){
+    log(`Disconnect failed: ${e.message||e}`,'errlog')
+  }
+};
+$('clear').onclick=async()=>{
+  try{
+    await call(1,[7,active]);
+    log(`Cleared active profile ${active+1}.`,'ok');
+    await state()
+  }catch(e){
+    log(`Clear profile failed: ${e.message||e}`,'errlog')
+  }
+};
+$('type').onclick=async()=>{
+  try{
+    let val=$('text').value;
+    if(!val)return;
+    let t=ENC.encode(val);
+    await call(1,[8,...t]);
+    log(`Typed string (${val.length} chars) over HID.`,'ok');
+    $('text').value=''
+  }catch(e){
+    log(`Type string failed: ${e.message||e}`,'errlog')
+  }
+};
+
+let fileEl=$('file');
+if(fileEl){
+  fileEl.onchange=()=>{
+    let hasFile=fileEl.files&&fileEl.files.length>0;
+    if($('upload'))$('upload').disabled=!d||!hasFile;
+  };
+}
+
+$('upload').onclick=async()=>{
+  try{
+    let f=$('file')?$('file').files[0]:null;
+    if(!f)throw Error('Choose a signed package');
+    let a=new Uint8Array(await f.arrayBuffer());
+    if(!a.length||a.length>488*1024)throw Error('Invalid package size');
+    
+    if($('upload'))$('upload').disabled=true;
+    if($('pbar')){$('pbar').style.display='block';$('pbar').value=0}
+    if($('progress')){$('progress').style.display='block';$('progress').textContent='Initializing DFU...'}
+    log(`Starting DFU upload: ${f.name} (${a.length} bytes)...`);
+    
+    let begin=new Uint8Array(8),v=new DataView(begin.buffer);
+    v.setUint32(0,a.length,true);
+    v.setUint32(4,crc32(a),true);
+    await call(1,[9,...begin]);
+    
+    for(let off=0;off<a.length;){
+      let chunk=a.slice(off,Math.min(off+508,a.length)),p=new Uint8Array(4+chunk.length);
+      new DataView(p.buffer).setUint32(0,off,true);
+      p.set(chunk,4);
+      let next=new DataView((await call(4,p)).buffer).getUint32(0,true);
+      if(next<=off||next>off+chunk.length)throw Error('Unexpected DFU offset');
+      off=next;
+      let pct=Math.round(off*100/a.length);
+      if($('pbar'))$('pbar').value=pct;
+      if($('progress'))$('progress').textContent=`Uploading: ${pct}% (${off}/${a.length} bytes)`;
+    }
+    
+    if($('progress'))$('progress').textContent='Committing update & rebooting...';
+    log('Streaming complete. Committing update & rebooting device...');
+    await call(1,[10]);
+    setStatus('disconnected',false);
+    log('DFU Update successfully completed! Device is rebooting.','ok');
+  }catch(e){
+    log(`DFU failed: ${e.message||e}`,'errlog');
+    if($('progress'))$('progress').textContent=`Upload failed: ${e.message||e}`;
+  }finally{
+    let f=$('file')?$('file').files[0]:null;
+    if($('upload'))$('upload').disabled=!d||!f;
+    setTimeout(()=>{if($('pbar'))$('pbar').style.display='none'}, 3000);
+  }
+};
+</script>

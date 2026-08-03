@@ -1,15 +1,127 @@
-<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Pager — Bluetooth</title>
+<!doctype html>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pager — Bluetooth Dashboard</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f5f6f4;color:#18201b;font:14px system-ui,-apple-system,sans-serif}main{max-width:620px;margin:auto;padding:22px 16px 40px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}h1{font-size:20px;margin:0;letter-spacing:-.5px}small,.muted{color:#68726b}.state{font-size:12px;color:#b13a2e}.state:before{content:'● ';font-size:10px}.state.on{color:#18794e}section{background:#fff;border:1px solid #dfe4df;border-radius:12px;padding:15px;margin:10px 0}h2{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#68726b;margin:0 0 12px}.row{display:flex;align-items:center;gap:8px}button{font:inherit;padding:9px 11px;background:#fff;color:#18201b;border:1px solid #ccd5ce;border-radius:8px;cursor:pointer}button:hover{background:#f0f4f0}.primary{background:#1c6b48;color:#fff;border-color:#1c6b48}.primary:hover{background:#145738}.warn{color:#b13a2e;border-color:#e2b8b2}.control{display:none;gap:9px}.control.show{display:grid;grid-template-columns:1fr auto;align-items:center}.control p{margin:3px 0 0;color:#68726b;font-size:12px}.switch{appearance:none;width:38px;height:22px;border-radius:12px;background:#cbd4cd;padding:2px;transition:.2s}.switch:after{content:'';display:block;width:16px;height:16px;background:#fff;border-radius:50%;transition:.2s}.switch:checked{background:#1c6b48}.switch:checked:after{transform:translateX(16px)}output{font:13px ui-monospace,SFMono-Regular,monospace;color:#18794e;border:1px solid #cde0d3;border-radius:7px;padding:5px 8px}pre{height:180px;overflow:auto;margin:0;border-radius:8px;background:#17211b;color:#d8e5dc;padding:10px;font:11px ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}.time{color:#8da392}.ok{color:#7fd6a7}.warnlog{color:#f0c675}
+*{box-sizing:border-box}
+body{margin:0;background:#f5f6f4;color:#18201b;font:15px system-ui,-apple-system,sans-serif}
+main{max-width:620px;margin:auto;padding:22px 16px 40px}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+h1{font-size:22px;margin:0;letter-spacing:-.5px}
+small,.muted{color:#68726b}
+.state{font-size:13px;color:#b13a2e;font-weight:bold}
+.state:before{content:'● ';font-size:11px}
+.state.on{color:#18794e}
+section{background:#fff;border:1px solid #dfe4df;border-radius:12px;padding:16px;margin:12px 0}
+h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#68726b;margin:0 0 12px}
+.row{display:flex;align-items:center;gap:10px}
+button{font:inherit;padding:10px 14px;background:#fff;color:#18201b;border:1px solid #ccd5ce;border-radius:8px;cursor:pointer}
+button:hover{background:#f0f4f0}
+button:disabled{opacity:0.45;cursor:not-allowed}
+.primary{background:#1c6b48;color:#fff;border-color:#1c6b48}
+.primary:hover{background:#145738}
+.warn{color:#b13a2e;border-color:#e2b8b2}
+.control{display:none;gap:12px}
+.control.show{display:grid;grid-template-columns:1fr auto;align-items:center}
+.control p{margin:3px 0 0;color:#68726b;font-size:12px}
+.switch{appearance:none;width:40px;height:24px;border-radius:12px;background:#cbd4cd;padding:2px;transition:.2s;cursor:pointer}
+.switch:after{content:'';display:block;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s}
+.switch:checked{background:#1c6b48}
+.switch:checked:after{transform:translateX(16px)}
+output{font:13px ui-monospace,SFMono-Regular,monospace;color:#18794e;border:1px solid #cde0d3;background:#f3f8f4;border-radius:7px;padding:6px 10px}
+pre{height:200px;overflow:auto;margin:0;border-radius:8px;background:#17211b;color:#d8e5dc;padding:12px;font:12px ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}
+.time{color:#8da392}
+.ok{color:#7fd6a7}
+.warnlog{color:#f0c675}
 </style>
-<main><header><div><h1>Pager</h1><small>Bluetooth control</small></div><span id=status class=state>disconnected</span></header>
-<section><h2>Connection</h2><div class=row><button id=connect class=primary>Connect via Bluetooth</button><button id=disconnect class=warn hidden>Disconnect</button></div><p class=muted>Choose Pager in the browser Bluetooth dialog.</p></section>
-<section id=controls class=control><div><strong>Status LED</strong><p>Enable the LED; off returns it to automatic mode.</p></div><input id=led class=switch type=checkbox><div><strong>Heartbeat</strong><p>Latest notification from Pager.</p></div><output id=value>—</output></section>
-<section><h2>Activity</h2><pre id=log><span class=time>[ready]</span> Select Connect to begin.</pre></section></main>
+<main>
+  <header>
+    <div><h1>Pager Bluetooth</h1><small>BLE GATT & Heartbeat Dashboard</small></div>
+    <span id="status" class="state">disconnected</span>
+  </header>
+
+  <section>
+    <h2>Connection</h2>
+    <div class="row">
+      <button id="connect" class="primary">Connect via Bluetooth</button>
+      <button id="disconnect" class="warn" hidden>Disconnect</button>
+    </div>
+    <p class="muted">Ensure Pager is advertising over Bluetooth.</p>
+  </section>
+
+  <section id="controls" class="control">
+    <div><strong>Status LED Mode</strong><p>Enable manual ON mode; unchecking restores automatic mode.</p></div>
+    <input id="led" class="switch" type="checkbox">
+    <div><strong>Heartbeat Counter</strong><p>Live periodic notification from board.</p></div>
+    <output id="value">—</output>
+  </section>
+
+  <section>
+    <h2>Log Console</h2>
+    <pre id="log"><span class="time">[ready]</span> Select Connect via Bluetooth to begin.</pre>
+  </section>
+</main>
+
 <script>
-const SERVICE='9e7a0001-0b3e-46e8-ad30-7746bad7128a',LED='9e7a0002-0b3e-46e8-ad30-7746bad7128a',STATUS='9e7a0003-0b3e-46e8-ad30-7746bad7128a', $=x=>document.getElementById(x);let device,led,status;
-function log(text,kind=''){let t=new Date().toTimeString().slice(0,8),e=document.createElement('div');e.innerHTML='<span class=time>['+t+']</span> ';let s=document.createElement('span');s.className=kind;s.textContent=text;e.append(s);$('log').append(e);$('log').scrollTop=$('log').scrollHeight}
-function disconnected(){$('status').textContent='disconnected';$('status').className='state';$('connect').hidden=false;$('disconnect').hidden=true;$('controls').className='control';device=led=status=null;log('Disconnected.','warnlog')}
-$('connect').onclick=async()=>{try{log('Requesting Pager…');device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});device.addEventListener('gattserverdisconnected',disconnected);let server=await device.gatt.connect(),service=await server.getPrimaryService(SERVICE);led=await service.getCharacteristic(LED);status=await service.getCharacteristic(STATUS);await status.startNotifications();status.addEventListener('characteristicvaluechanged',e=>{$('value').textContent=e.target.value.getUint8(0);log('Heartbeat received.','ok')});$('status').textContent='connected';$('status').className='state on';$('connect').hidden=true;$('disconnect').hidden=false;$('controls').className='control show';log('Connected to '+(device.name||'Pager')+'.','ok')}catch(e){log('Connection failed: '+(e.message||e),'warnlog')}};
-$('disconnect').onclick=()=>device&&device.gatt.connected&&device.gatt.disconnect();$('led').onchange=async e=>{if(!led)return;try{await led.writeValue(new Uint8Array([e.target.checked?2:0]));log(e.target.checked?'LED enabled.':'LED set to automatic.','ok')}catch(x){log('LED command failed: '+(x.message||x),'warnlog')}};
+const SERVICE='9e7a0001-0b3e-46e8-ad30-7746bad7128a',LED='9e7a0002-0b3e-46e8-ad30-7746bad7128a',STATUS='9e7a0003-0b3e-46e8-ad30-7746bad7128a';
+const $=x=>document.getElementById(x);
+let device,led,status;
+
+function log(text,kind=''){
+  let t=new Date().toTimeString().slice(0,8),e=document.createElement('div');
+  e.innerHTML='<span class="time">['+t+']</span> ';
+  let s=document.createElement('span');
+  s.className=kind;
+  s.textContent=text;
+  e.append(s);
+  $('log').append(e);
+  $('log').scrollTop=$('log').scrollHeight
+}
+
+function disconnected(){
+  $('status').textContent='disconnected';
+  $('status').className='state';
+  $('connect').hidden=false;
+  $('disconnect').hidden=true;
+  $('controls').className='control';
+  device=led=status=null;
+  log('Disconnected from Pager.','warnlog')
+}
+
+$('connect').onclick=async()=>{
+  try{
+    log('Requesting Pager Bluetooth device…');
+    device=await navigator.bluetooth.requestDevice({filters:[{services:[SERVICE]}]});
+    device.addEventListener('gattserverdisconnected',disconnected);
+    log('Connecting to GATT server…');
+    let server=await device.gatt.connect();
+    let service=await server.getPrimaryService(SERVICE);
+    led=await service.getCharacteristic(LED);
+    status=await service.getCharacteristic(STATUS);
+    await status.startNotifications();
+    status.addEventListener('characteristicvaluechanged',e=>{
+      let val = e.target.value.getUint8(0);
+      $('value').textContent = `Counter: ${val}`;
+      log(`Heartbeat received: ${val}`,'ok')
+    });
+    $('status').textContent='connected';
+    $('status').className='state on';
+    $('connect').hidden=true;
+    $('disconnect').hidden=false;
+    $('controls').className='control show';
+    log('Connected to '+(device.name||'Pager')+' over BLE.','ok')
+  }catch(e){
+    log('Connection failed: '+(e.message||e),'warnlog')
+  }
+};
+
+$('disconnect').onclick=()=>device&&device.gatt.connected&&device.gatt.disconnect();
+$('led').onchange=async e=>{
+  if(!led)return;
+  try{
+    await led.writeValue(new Uint8Array([e.target.checked?2:0]));
+    log(e.target.checked?'LED mode set to Manual ON.':'LED mode set to Automatic.','ok')
+  }catch(x){
+    log('LED command failed: '+(x.message||x),'warnlog')
+  }
+};
 </script>
