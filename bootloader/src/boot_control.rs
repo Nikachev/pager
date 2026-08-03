@@ -98,7 +98,10 @@ pub unsafe fn write(record: Record, current_page: u32) {
     let destination = target as *mut u32;
     for index in 0..(core::mem::size_of::<Record>() / 4) {
         core::ptr::write_volatile(NVMC_CONFIG, 1);
-        core::ptr::write_volatile(destination.add(index), core::ptr::read_volatile(source.add(index)));
+        core::ptr::write_volatile(
+            destination.add(index),
+            core::ptr::read_volatile(source.add(index)),
+        );
         while core::ptr::read_volatile(NVMC_READY) == 0 {}
     }
     core::ptr::write_volatile(NVMC_CONFIG, 0);

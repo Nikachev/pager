@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 mkdir -p dist
 
 echo "=================================================="
-echo "         Building nice!nano v2 Firmware           "
+echo "              Building Pager Firmware             "
 echo "=================================================="
 
 SLOT="${PAGER_SLOT:-A}"
@@ -19,6 +19,20 @@ HEX_PATH="dist/pager-${SLOT}.hex"
 
 echo "1. Compiling release binary..."
 PAGER_SLOT="$SLOT" cargo build --release
+
+case "$SLOT" in
+    A) EXPECTED_VECTOR=00009000 ;;
+    B) EXPECTED_VECTOR=00083000 ;;
+esac
+
+# The raw .bin contains no address information, so validate the linked ELF
+# before publishing it.  This catches a stale or incorrectly selected memory
+# layout rather than producing a package that the bootloader can never boot.
+VECTOR_ADDRESS=$(rust-objdump -h "$ELF_PATH" | awk '$2 == ".vector_table" { print $4; exit }')
+if [ "$VECTOR_ADDRESS" != "$EXPECTED_VECTOR" ]; then
+    echo "Error: slot ${SLOT} vector table is linked at 0x${VECTOR_ADDRESS:-unknown}; expected 0x${EXPECTED_VECTOR}." >&2
+    exit 1
+fi
 
 extract() {
     local fmt=$1 out=$2

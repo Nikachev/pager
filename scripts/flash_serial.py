@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Serial DFU flash script for nice!nano v2 (nRF52840) pager firmware.
+Serial DFU flash script for the Pager (nRF52840) firmware.
 Streams a signed package over USB CDC-ACM using `update <bytes> <crc32>`.
 """
 
 import sys
 import os
 import time
-import glob
 import fcntl
 import zlib
 import serial
+from serial.tools import list_ports
 
 LOCK_FILE = "/tmp/pager_hil_test.lock"
 
@@ -27,10 +27,36 @@ def wait_for_marker(serial_port, markers, timeout):
             return line
     raise TimeoutError(f"Timed out waiting for one of: {', '.join(markers)}")
 
+
+def write_all(serial_port, data):
+    """Write *data* completely, including on a short CDC write."""
+    offset = 0
+    while offset < len(data):
+        written = serial_port.write(data[offset:])
+        if not written:
+            raise RuntimeError(f"Serial write stalled at {offset}/{len(data)} bytes")
+        offset += written
+
 def find_default_port():
-    ports = glob.glob("/dev/cu.usbmodem*")
+    requested_serial = os.getenv("PAGER_USB_SERIAL")
+    requested_vid = os.getenv("PAGER_USB_VID")
+    requested_pid = os.getenv("PAGER_USB_PID")
+    ports = []
+    for port in list_ports.comports():
+        if not port.device.startswith("/dev/cu.usbmodem"):
+            continue
+        if requested_serial and port.serial_number != requested_serial:
+            continue
+        if requested_vid and (port.vid is None or port.vid != int(requested_vid, 0)):
+            continue
+        if requested_pid and (port.pid is None or port.pid != int(requested_pid, 0)):
+            continue
+        ports.append(port.device)
+    ports.sort()
     if not ports:
-        raise RuntimeError("No matching /dev/cu.usbmodem* serial port found. Connect the board first.")
+        raise RuntimeError("No matching USB modem found. Connect the board or set SERIAL_PORT.")
+    if len(ports) != 1:
+        raise RuntimeError(f"Multiple USB modems match: {', '.join(ports)}. Set SERIAL_PORT.")
     return ports[0]
 
 def main():
@@ -64,7 +90,7 @@ def main():
         crc32 = zlib.crc32(binary_data)
         cmd = f"update {file_size} {crc32:08x}\n".encode("utf-8")
         print(f"[*] Sending DFU trigger command: {cmd.strip().decode()}")
-        s.write(cmd)
+        write_all(s, cmd)
         s.flush()
         ready = wait_for_marker(
             s,
@@ -79,9 +105,7 @@ def main():
         written = 0
         for i in range(0, file_size, chunk_size):
             chunk = binary_data[i:i + chunk_size]
-            written_now = s.write(chunk)
-            if written_now != len(chunk):
-                raise RuntimeError(f"Short serial write: {written_now}/{len(chunk)} bytes")
+            write_all(s, chunk)
             time.sleep(0.003)
             written += len(chunk)
             progress = (written / file_size) * 100

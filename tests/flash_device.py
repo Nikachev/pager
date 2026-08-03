@@ -1,5 +1,5 @@
 """
-Device flashing script for nice!nano v2 pager firmware.
+Device flashing script for Pager firmware.
 Invokes USB Serial DFU update via scripts/flash_serial.py.
 """
 

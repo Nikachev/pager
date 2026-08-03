@@ -1,6 +1,6 @@
-# nice!nano v2 Web Server, BLE & OTA Firmware
+# Pager firmware
 
-Custom bare-metal firmware for the **nice!nano v2** (nRF52840) board running async Rust with **Embassy** and **embassy-net**. It exposes a USB-CDC-NCM HTTP control plane, signed staged firmware updates, and experimental BLE HID work built on `nrf-sdc`.
+Custom bare-metal firmware for the **Pager** device (nRF52840, based on a nice!nano v2 board) running async Rust with **Embassy** and **embassy-net**. It exposes a USB-CDC-NCM HTTP control plane, signed staged firmware updates, and experimental BLE HID work built on `nrf-sdc`.
 
 ---
 
@@ -8,9 +8,23 @@ Custom bare-metal firmware for the **nice!nano v2** (nRF52840) board running asy
 
 *   **USB-CDC-NCM Networking**: Emulates a USB-Ethernet card. Connects to the host (macOS/Linux) and automatically assigns IP addresses via an embedded DHCP server.
 *   **Web Server (smoltcp)**: Hosts a lightweight, self-contained web UI at `http://192.168.42.1/` for diagnostics, slot management, and OTA updates.
-*   **A/B Web & Serial DFU**: Upload a signed image into the inactive bank, boot it once as a trial, and automatically restore the confirmed bank if it resets before confirmation.
-*   **BLE GATT & HID Keyboard**: Advertises as `TrouBLE-Pager` and emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
-*   **Web Bluetooth UI**: A static client webpage (`ble_client.html`) using Chrome/Safari Web Bluetooth API to connect directly to the board over BLE, control the LED, and view live heartbeat logs.
+*   **A/B Web & Serial DFU**: Upload a signed package into the inactive bank, boot it once as a trial, and automatically restore the confirmed bank if it resets before confirmation.
+*   **BLE GATT & HID Keyboard**: Advertises as `Pager` and emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
+*   **Web Bluetooth UI**: A static client webpage (`ble_client.html`) using Chrome Web Bluetooth to connect directly to the board over BLE, control the LED, and view live heartbeat logs.
+
+Each USB descriptor serial is derived from the nRF52840 factory device ID.
+When several boards are connected, use `SERIAL_PORT` to select one explicitly;
+`PAGER_USB_SERIAL`, `PAGER_USB_VID`, and `PAGER_USB_PID` additionally filter
+automatic discovery.
+
+## Security and trust boundary
+
+The HTTP and CDC command interfaces intentionally trust **only the host that is
+physically connected to the board by USB**. The device uses a private USB-NCM
+link (`192.168.42.1/24`), is not intended to be routed, and these local control
+planes do not provide remote authentication. Do not bridge this interface to an
+untrusted network. A physically connected host can update firmware, alter BLE
+profiles, and send keyboard input; signed packages remain mandatory for boot.
 
 ---
 
@@ -37,6 +51,48 @@ rustup target add thumbv7em-none-eabihf
 # Install cargo-binutils for objcopy tools
 cargo install cargo-binutils
 ```
+
+Install host test dependencies into an isolated environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r tests/requirements.txt
+```
+
+### Generate local firmware-signing keys
+
+Before the first `make build`, `make flash`, or `make ci`, create the local
+Ed25519 signing keys. The build expects both a current key and a next key for
+key-rotation verification. `keys/` is intentionally ignored by Git: keep the
+private PEM files only on trusted development machines.
+
+Linux and macOS (requires OpenSSL 3 or newer):
+
+```bash
+mkdir -p keys
+openssl genpkey -algorithm Ed25519 -out keys/firmware_signing_private.pem
+openssl pkey -in keys/firmware_signing_private.pem -pubout \
+  -out keys/firmware_signing_public.pem
+openssl genpkey -algorithm Ed25519 -out keys/firmware_signing_next_private.pem
+openssl pkey -in keys/firmware_signing_next_private.pem -pubout \
+  -out keys/firmware_signing_next_public.pem
+```
+
+Windows PowerShell (install an OpenSSL distribution first, then ensure
+`openssl.exe` is on `PATH`):
+
+```powershell
+New-Item -ItemType Directory -Force keys | Out-Null
+openssl genpkey -algorithm Ed25519 -out keys/firmware_signing_private.pem
+openssl pkey -in keys/firmware_signing_private.pem -pubout -out keys/firmware_signing_public.pem
+openssl genpkey -algorithm Ed25519 -out keys/firmware_signing_next_private.pem
+openssl pkey -in keys/firmware_signing_next_private.pem -pubout -out keys/firmware_signing_next_public.pem
+```
+
+Do not regenerate these files after a package has been deployed: the
+bootloader can only validate packages signed by a public key embedded in its
+own firmware. A deliberate key rotation requires embedding the next public
+key and deploying that bootloader first.
 
 ---
 
@@ -74,11 +130,16 @@ Or directly from CLI:
 ## ⚡ How to Flash
 
 ### 1. Flash via HTTP OTA (Default)
-Upload the application binary directly over the USB-Ethernet HTTP link:
+Upload a signed package over the USB-Ethernet HTTP link:
 ```bash
-make flash-http SLOT=B
+make flash
 ```
-The uploader supplies `X-Pager-CRC32` and uploads `dist/pager-B.signed.pkg`; use `make flash-http` rather than a bare `curl` command.
+The default target reads `/health` and builds the package for the inactive
+slot. The uploader supplies `X-Pager-CRC32`; use `make flash-http SLOT=A` or
+`SLOT=B` only when a recovery workflow explicitly requires that slot. A package
+consists of a 4 KiB manifest page followed by the independently linked `.bin`
+image. The manifest contains `PGRFW001`, version, image length, target slot,
+SHA-256 and an Ed25519 signature over those fields.
 
 ### 2. Flash via USB Serial DFU (Backup/Reserve)
 Stream binary chunks over USB serial interface:
@@ -86,6 +147,10 @@ Stream binary chunks over USB serial interface:
 make flash-serial SLOT=B
 ```
 Or manually: `python3 scripts/flash_serial.py /dev/cu.usbmodem123456783 dist/pager-B.signed.pkg`
+
+The serial protocol is `update <package-bytes> <crc32-hex>\n`, followed by
+exactly that many package bytes after `SERIAL_UPDATE:READY`. The helper handles
+short writes and rejects a non-complete device response.
 
 ### 3. Flash via SWD Probe (Hardware Recovery)
 If the board is unresponsive or unbricking is required, program directly over SWD using `probe-rs`:
@@ -112,7 +177,7 @@ Keep private keys outside the repository. The bootloader currently trusts the
 current and next public keys: install a bootloader containing a new key before
 signing packages with it, and remove an old key only in a later SWD migration.
 
-### First A/B migration via SWD
+### Initial A/B installation via SWD
 
 This explicitly destructive operation erases the old single-bank firmware and
 BLE bonds, then installs the A/B bootloader and a signed Slot A image:
@@ -173,9 +238,15 @@ The board maintains 3 separate profile slots in RAM and persistent flash storage
 *   **POST `/keyboard/switch?slot=<id>`**: Switches active profile slot (`0`, `1`, or `2`). The new profile is used on the next BLE connection.
 *   **POST `/keyboard/pair`**: Puts active slot into pairing mode to allow new hosts to discover and bond.
 *   **POST `/keyboard/delete?slot=<id>`**: Deletes security bond for specified slot.
+*   **POST `/keyboard/disconnect`**: Ends the current BLE connection and resumes advertising. This is useful before a new host or diagnostic client scans for the Pager.
 *   **POST `/keyboard/type`**: Emulates key presses as if typed on a physical keyboard.
     *   **Body**: Raw text to type (up to 128 bytes).
 *   **GET `/health`**: Returns OTA status plus dropped log/BLE-command counters for diagnosis.
+
+The BLE Battery Service currently reports a fixed **13%** sentinel because this
+board configuration has no connected VBAT ADC divider. It is a discovery/test
+placeholder, not a battery measurement. The health endpoint's dropped-command
+and dropped-log counters identify data lost from bounded in-memory queues.
 
 ---
 
@@ -185,28 +256,29 @@ A Pytest integration test suite (`tests/test_device.py`) verifies Bluetooth LE, 
 
 ### Run Fast Smoke Suite (< 20s):
 ```bash
-pytest -m smoke -v
+pytest --run-hil -m smoke -v
 ```
 
 Run the extended non-destructive endpoint and error-path checks separately:
 
 ```bash
-pytest -m contract -v
-```
-
-### Run Serial DFU Update Test:
-```bash
-pytest -m dfu -v
+pytest --run-hil -m contract -v
 ```
 
 DFU tests erase and reboot the board, so they require an explicit opt-in:
 
 ```bash
 make test-dfu
-# or: pytest -m dfu -v --run-destructive
+# or: pytest --run-hil -m dfu -v --run-destructive
 ```
 
 ### Run Full Integration Suite:
 ```bash
-pytest tests/test_device.py -v
+pytest --run-hil tests/test_device.py -v
 ```
+
+### Local non-destructive verification
+
+`make ci` runs formatting, strict linting, both application slots, the
+bootloader, Python compilation, package checks, and host-only tests. It does
+not touch a board; use the explicit HIL targets for physical hardware.

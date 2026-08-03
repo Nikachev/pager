@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
@@ -12,17 +10,20 @@ use trouble_host::prelude::*;
 // GATT Server and Services with Security & Encryption (trouble-host)
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
 #[gatt_server(attribute_table_size = 128)]
 pub struct Server {
-    #[allow(dead_code)]
     pub custom_service: CustomService,
-    #[allow(dead_code)]
     pub hid_service: HidService,
-    #[allow(dead_code)]
     pub battery_service: BatteryService,
-    #[allow(dead_code)]
     pub device_information_service: DeviceInformationService,
+}
+
+impl Server<'_> {
+    /// Retain discovery-only services in the live profile; their attributes
+    /// are served by generated GATT code, not application request handlers.
+    pub fn register_discovery_services(&self) {
+        let _ = (&self.battery_service, &self.device_information_service);
+    }
 }
 
 #[gatt_service(uuid = "9e7a0001-0b3e-46e8-ad30-7746bad7128a")]
@@ -87,11 +88,11 @@ pub struct BatteryService {
 
 #[gatt_service(uuid = "180a")]
 pub struct DeviceInformationService {
-    #[characteristic(uuid = "2a29", read, value = *b"Antigravity")]
-    pub manufacturer_name: [u8; 11],
+    #[characteristic(uuid = "2a29", read, value = *b"Nikachev")]
+    pub manufacturer_name: [u8; 8],
 
-    #[characteristic(uuid = "2a24", read, value = *b"nice_nano_v2")]
-    pub model_number: [u8; 12],
+    #[characteristic(uuid = "2a24", read, value = *b"Pager-nRF52840")]
+    pub model_number: [u8; 14],
 }
 
 pub struct KeyboardState {
@@ -107,7 +108,6 @@ pub static KEYBOARD_STATE: SyncMutex<ThreadModeRawMutex, RefCell<KeyboardState>>
         pairing_mode: false,
     }));
 
-#[allow(dead_code)]
 pub enum BleCommand {
     SyncActiveBond,
     Disconnect,
@@ -128,7 +128,6 @@ pub fn try_send_command(command: BleCommand) -> bool {
     }
 }
 
-#[allow(dead_code)]
 pub fn ascii_to_hid(c: char) -> Option<(u8, u8)> {
     let b = c as u8;
     if b >= 128 {

@@ -1,7 +1,7 @@
 # Testing the pager firmware
 
 This document describes the integration test-suite that exercises the firmware
-running on a physically connected **nice!nano v2** (nRF52840) board. The tests
+running on a physically connected **Pager** (nRF52840) board. The tests
 talk to real hardware over BLE, USB-CDC-NCM (HTTP), and USB-CDC-ACM (Serial).
 
 All tests live under `tests/`. The main suite is `tests/test_device.py`

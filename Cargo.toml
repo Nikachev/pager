@@ -29,7 +29,7 @@ embassy-sync = { version = "0.8.0", features = ["defmt"] }
 nrf-sdc = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", default-features = false, features = ["defmt", "peripheral", "central", "nrf52840"] }
 nrf-mpsl = { git = "https://github.com/alexmoon/nrf-sdc.git", rev = "abe49d22ebfc85fae134eb082fbfddf752016a55", default-features = false, features = ["defmt", "critical-section-impl", "nrf52840"] }
 bt-hci = { version = "0.9", default-features = false, features = ["defmt"] }
-trouble-host = { git = "https://github.com/embassy-rs/trouble", branch = "main", features = ["peripheral", "gatt", "derive", "default-packet-pool", "defmt", "security"] }
+trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "c21b1239fb86de712fc99da803def88378d81177", features = ["peripheral", "gatt", "derive", "default-packet-pool", "defmt", "security"] }
 
 [profile.release]
 codegen-units = 1

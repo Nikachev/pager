@@ -9,7 +9,7 @@ from bleak import BleakScanner, BleakClient
 from common import DEFAULT_BASE_URL, HID_INPUT_REPORT_UUID
 
 KEYBOARD_IP = DEFAULT_BASE_URL.replace("http://", "")
-DEVICE_NAME = "nice_nano_4"
+DEVICE_NAME = "Pager"
 HID_SERVICE_UUID = "00001812-0000-1000-8000-00805f9b34fb"
 INPUT_REPORT_UUID = HID_INPUT_REPORT_UUID
 

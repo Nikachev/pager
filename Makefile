@@ -1,5 +1,5 @@
 # ==============================================================================
-# Makefile for nice!nano v2 (nRF52840) Pager Firmware
+# Makefile for Pager (nRF52840) firmware
 # A/B application behind a 32 KiB secure bootloader. Set SLOT=A or SLOT=B.
 # ==============================================================================
 
@@ -19,14 +19,15 @@ ELF         ?= target/thumbv7em-none-eabihf/release/pager
 # Monotonic signed-package version; override in release automation if needed.
 VERSION     ?= $(shell date +%s)
 SIGNING_KEY ?= keys/firmware_signing_private.pem
+SIGNING_PUBLIC_KEYS ?= keys/firmware_signing_public.pem keys/firmware_signing_next_public.pem
 BOOTLOADER_MANIFEST ?= bootloader/Cargo.toml
 BOOTLOADER_RUSTFLAGS := -C link-arg=-Tlink.x
-PYTEST      ?= pytest
+PYTEST      ?= $(if $(wildcard .venv/bin/python),.venv/bin/python -m pytest,python3 -m pytest)
 PROBE_RS    ?= probe-rs
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build check clippy fmt verify bootloader sign sign-release verify-package ble-client flash flash-http flash-serial flash-swd flash-swd-migration hil test test-hil test-smoke test-dfu test-ble clean clean-dist clean-all help
+.PHONY: all build check clippy fmt verify bootloader sign sign-release verify-package ci ble-client flash flash-http flash-serial flash-swd flash-swd-migration hil test test-hil test-smoke test-dfu test-ble clean clean-dist clean-all help
 
 all: verify build
 
@@ -64,7 +65,21 @@ sign-release: build
 	$(MAKE) verify-package PACKAGE="$(PACKAGE)"
 
 verify-package:
-	python3 scripts/verify_package.py "$(PACKAGE)"
+	@for key in $(SIGNING_PUBLIC_KEYS); do test -f "$$key" || (echo "Trusted public key not found: $$key"; exit 2); done
+	python3 scripts/verify_package.py "$(PACKAGE)" $(foreach key,$(SIGNING_PUBLIC_KEYS),--key "$(key)")
+
+# Local, non-destructive equivalent of CI. Hardware tests are intentionally
+# excluded; invoke the explicit HIL targets only with a selected physical board.
+ci: fmt clippy bootloader
+	python3 scripts/verify_layout.py
+	rustc --edition=2021 --test src/protocol.rs -o target/protocol-host-tests
+	target/protocol-host-tests
+	PAGER_SLOT=A ./build.sh
+	$(MAKE) sign SLOT=A VERSION=1
+	PAGER_SLOT=B ./build.sh
+	$(MAKE) sign SLOT=B VERSION=1
+	python3 -m compileall -q scripts tests
+	$(PYTEST) -q tests/unit
 
 # Web Bluetooth requires a secure context. Chrome treats localhost as trusted,
 # unlike the board's plain HTTP control endpoint.
@@ -78,8 +93,11 @@ fmt:
 
 ## ⚡ Flashing Targets
 
-# Default flash target (HTTP OTA)
-flash: flash-http
+# Default HTTP OTA target. Ask the running firmware for its inactive slot
+# before compiling, so a valid package is never addressed to the active bank.
+# Pass SLOT=A or SLOT=B explicitly to flash-http for recovery workflows.
+flash:
+	@$(MAKE) flash-http SLOT="$$(python3 scripts/select_inactive_slot.py "$(HTTP_URL:/update=/health)")"
 
 # HTTP OTA Flashing (Default method)
 flash-http: sign
@@ -124,7 +142,7 @@ test:
 	@echo "=================================================="
 	@echo "          Running HIL Integration Tests           "
 	@echo "=================================================="
-	$(PYTEST) tests/test_device.py -v
+	$(PYTEST) --run-hil tests/test_device.py -v
 
 test-hil: test
 
@@ -133,21 +151,21 @@ test-smoke:
 	@echo "=================================================="
 	@echo "            Running HIL Smoke Tests               "
 	@echo "=================================================="
-	$(PYTEST) -m smoke -x -v
+	$(PYTEST) --run-hil -m smoke -x -v
 
 # DFU update tests (HTTP + Serial DFU)
 test-dfu: sign
 	@echo "=================================================="
 	@echo "             Running HIL DFU Tests                "
 	@echo "=================================================="
-	$(PYTEST) -m dfu -v --run-destructive
+	$(PYTEST) --run-hil -m dfu -v --run-destructive
 
 # BLE tests
 test-ble:
 	@echo "=================================================="
 	@echo "             Running HIL BLE Tests                "
 	@echo "=================================================="
-	$(PYTEST) -m ble -v
+	$(PYTEST) --run-hil -m ble -v
 
 ## 🧹 Cleanup
 clean: clean-dist
@@ -158,11 +176,12 @@ clean-dist:
 
 clean-all: clean-dist
 	cargo clean
+	cargo clean --manifest-path $(BOOTLOADER_MANIFEST)
 
 ## ❓ Help Target
 help:
 	@echo "========================================================================"
-	@echo "                 nice!nano v2 Firmware Makefile                        "
+	@echo "                      Pager Firmware Makefile                          "
 	@echo "========================================================================"
 	@echo "Usage: make [target] [VARIABLES]"
 	@echo ""

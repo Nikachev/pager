@@ -17,6 +17,7 @@ pub static OTA_RESULT_SIGNAL: Signal<ThreadModeRawMutex, Result<(), ()>> = Signa
 pub enum OtaCommand {
     Start {
         content_len: usize,
+        expected_crc: u32,
         target_start: u32,
         target_slot: u32,
     },
@@ -29,12 +30,13 @@ pub async fn ota_consumer_task(
 ) -> ! {
     loop {
         let cmd = OTA_COMMAND_SIGNAL.wait().await;
-        let (content_len, target_start, target_slot) = match cmd {
+        let (content_len, expected_crc, target_start, target_slot) = match cmd {
             OtaCommand::Start {
                 content_len,
+                expected_crc,
                 target_start,
                 target_slot,
-            } => (content_len, target_start, target_slot),
+            } => (content_len, expected_crc, target_start, target_slot),
             OtaCommand::Cancel => {
                 OTA_PIPE.clear();
                 continue;
@@ -73,8 +75,13 @@ pub async fn ota_consumer_task(
         // first part of an update and leave both tasks waiting forever.
         OTA_READY_SIGNAL.signal(Ok(()));
 
-        let mut writer = crate::flash::OtaWriter::new(&mut *flash, target_start);
+        let mut writer = crate::flash::OtaWriter::new(
+            &mut *flash,
+            target_start,
+            target_start + MAX_BIN_SIZE as u32,
+        );
         let mut total_written = 0;
+        let mut crc = crate::flash::CRC32_INIT;
         let mut write_err = false;
         let mut read_buf = [0u8; 1024];
 
@@ -102,42 +109,68 @@ pub async fn ota_consumer_task(
                 write_err = true;
                 break;
             }
+            crc = crate::flash::crc32_update(crc, &read_buf[..n]);
             total_written += n;
         }
 
-        if !write_err && total_written == content_len {
+        let mut ready_to_validate = false;
+        if !write_err
+            && total_written == content_len
+            && crate::flash::crc32_finalize(crc) == expected_crc
+        {
             if let Err(e) = writer.flush().await {
                 crate::log_msg!("OTA Consumer flush error: {:?}", e);
                 OTA_RESULT_SIGNAL.signal(Err(()));
             } else {
-                drop(writer);
-                match crate::flash::package_targets_slot(&mut *flash, target_start, target_slot)
-                    .await
-                {
-                    Ok(true) => {
-                        crate::log_msg!(
-                            "OTA Consumer successfully finished writing {} bytes",
-                            total_written
-                        );
-                        OTA_RESULT_SIGNAL.signal(Ok(()));
-                    }
-                    Ok(false) => {
-                        crate::log_msg!("OTA package target slot mismatch");
-                        OTA_RESULT_SIGNAL.signal(Err(()));
-                    }
-                    Err(error) => {
-                        crate::log_msg!("OTA manifest read error: {:?}", error);
-                        OTA_RESULT_SIGNAL.signal(Err(()));
-                    }
-                }
+                ready_to_validate = true;
             }
         } else {
             crate::log_msg!(
-                "OTA Consumer write incomplete: {} / {}",
+                "OTA Consumer write rejected: {} / {}, checksum={:08x}",
                 total_written,
-                content_len
+                content_len,
+                crate::flash::crc32_finalize(crc)
             );
             OTA_RESULT_SIGNAL.signal(Err(()));
+        }
+
+        // A cancelled, corrupt, or incomplete transfer must never leave a
+        // bootable-looking manifest in the inactive slot. The writer is no
+        // longer used, so its mutable flash borrow ends before validation.
+        let mut completed = false;
+        if ready_to_validate {
+            match crate::flash::package_targets_slot(
+                &mut *flash,
+                target_start,
+                content_len,
+                target_slot,
+            )
+            .await
+            {
+                Ok(true) => {
+                    crate::log_msg!(
+                        "OTA Consumer successfully finished writing {} bytes",
+                        total_written
+                    );
+                    OTA_RESULT_SIGNAL.signal(Ok(()));
+                    completed = true;
+                }
+                Ok(false) => {
+                    crate::log_msg!("OTA package target slot mismatch");
+                    OTA_RESULT_SIGNAL.signal(Err(()));
+                }
+                Err(error) => {
+                    crate::log_msg!("OTA manifest read error: {:?}", error);
+                    OTA_RESULT_SIGNAL.signal(Err(()));
+                }
+            }
+        }
+        if !completed {
+            if let Err(error) =
+                crate::flash::invalidate_staging_manifest(&mut *flash, target_start).await
+            {
+                crate::log_msg!("OTA Consumer could not invalidate manifest: {:?}", error);
+            }
         }
 
         crate::flash::stop_flashing();
@@ -227,7 +260,6 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
             continue;
         }
 
@@ -265,14 +297,13 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
-                Timer::after(Duration::from_millis(100)).await;
                 continue;
             }
         };
 
         let request_line = &buf[..headers_end];
 
-        if starts_with(request_line, b"POST /update") {
+        if request_matches(request_line, "POST", "/update") {
             // Web OTA upload handler
             let content_len = match parse_content_length(request_line) {
                 Some(len) => len,
@@ -281,7 +312,6 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                     let _ = socket.write_all(response.as_bytes()).await;
                     let _ = socket.flush().await;
                     socket.close();
-                    Timer::after(Duration::from_millis(100)).await;
                     continue;
                 }
             };
@@ -303,23 +333,21 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
-                Timer::after(Duration::from_millis(100)).await;
                 continue;
             }
 
-            if content_len > MAX_BIN_SIZE {
+            if !(crate::flash::MANIFEST_PAGE_SIZE < content_len && content_len <= MAX_BIN_SIZE) {
                 warn!("Upload size exceeds limit");
                 crate::flash::stop_flashing();
-                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 24\r\nConnection: close\r\n\r\nFile exceeds 488KB limit";
+                let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 20\r\nConnection: close\r\n\r\nInvalid package size";
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
-                Timer::after(Duration::from_millis(100)).await;
                 continue;
             }
 
-            if find_subsequence(request_line, b"100-continue").is_some()
-                || find_subsequence(request_line, b"100-Continue").is_some()
+            if header_value(request_line, "expect")
+                .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
             {
                 let continue_resp = "HTTP/1.1 100 Continue\r\n\r\n";
                 let _ = socket.write_all(continue_resp.as_bytes()).await;
@@ -340,6 +368,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             OTA_RESULT_SIGNAL.reset();
             OTA_COMMAND_SIGNAL.signal(OtaCommand::Start {
                 content_len,
+                expected_crc,
                 target_start: inactive_slot_manifest_addr(),
                 target_slot: inactive_slot(),
             });
@@ -355,7 +384,6 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 let _ = socket.write_all(response.as_bytes()).await;
                 let _ = socket.flush().await;
                 socket.close();
-                Timer::after(Duration::from_millis(100)).await;
                 continue;
             }
 
@@ -500,7 +528,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 socket.close();
                 continue;
             }
-        } else if starts_with(request_line, b"GET /keyboard/state") {
+        } else if request_matches(request_line, "GET", "/keyboard/state") {
             let (active_slot, bonds, pairing_mode) = crate::ble::KEYBOARD_STATE.lock(|state| {
                 let s = state.borrow();
                 (s.active_slot, s.bonds.clone(), s.pairing_mode)
@@ -528,8 +556,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let _ = socket.write_all(json_body.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"POST /keyboard/switch") {
+        } else if request_matches(request_line, "POST", "/keyboard/switch") {
             let slot_idx = parse_slot(request_line);
 
             if let Some(slot) = slot_idx {
@@ -542,8 +569,13 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 // them out of this single HTTP task prevents a long NVMC/MPSL
                 // operation from making every endpoint unresponsive.
                 crate::ble::PERSIST_STATE.signal(());
-                let _ = crate::ble::try_send_command(crate::ble::BleCommand::SyncActiveBond);
-                let response = HTTP_200_SUCCESS;
+                let response = if crate::ble::try_send_command(
+                    crate::ble::BleCommand::RestartAdvertising,
+                ) {
+                    HTTP_200_SUCCESS
+                } else {
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
                 let response = HTTP_400_MISSING_SLOT;
@@ -551,8 +583,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             }
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"POST /keyboard/pair") {
+        } else if request_matches(request_line, "POST", "/keyboard/pair") {
             crate::ble::KEYBOARD_STATE.lock(|state| {
                 let mut s = state.borrow_mut();
                 // A host can forget this keyboard while the keyboard still
@@ -564,17 +595,31 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                 s.pairing_mode = true;
             });
             crate::ble::PERSIST_STATE.signal(());
-            // Do not mutate the live trouble-host security database here.
-            // Its runtime bond removal path can stall the BLE runner while a
-            // central is connected. A host that has forgotten the keyboard
-            // starts a new security procedure on its next protected HID
-            // access; PairingComplete then installs and persists that key.
-            let response = HTTP_200_SUCCESS;
+            // Drop the current GATT connection so the BLE task can rebuild
+            // its live bond database from the now-empty persistent slot
+            // before advertising again. Mutating that database in this HTTP
+            // task races a connected central and leaves stale LTKs active.
+            let response = if crate::ble::try_send_command(
+                crate::ble::BleCommand::RestartAdvertising,
+            ) {
+                HTTP_200_SUCCESS
+            } else {
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            };
             let _ = socket.write_all(response.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"POST /keyboard/delete") {
+        } else if request_matches(request_line, "POST", "/keyboard/disconnect") {
+            if crate::ble::try_send_command(crate::ble::BleCommand::Disconnect) {
+                let _ = socket.write_all(HTTP_200_SUCCESS.as_bytes()).await;
+            } else {
+                let _ = socket
+                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+            }
+            let _ = socket.flush().await;
+            socket.close();
+        } else if request_matches(request_line, "POST", "/keyboard/delete") {
             let slot_idx = parse_slot(request_line);
 
             if let Some(slot) = slot_idx {
@@ -583,8 +628,13 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                     s.bonds[slot] = None;
                 });
                 crate::ble::PERSIST_STATE.signal(());
-                let _ = crate::ble::try_send_command(crate::ble::BleCommand::SyncActiveBond);
-                let response = HTTP_200_SUCCESS;
+                let response = if crate::ble::try_send_command(
+                    crate::ble::BleCommand::RestartAdvertising,
+                ) {
+                    HTTP_200_SUCCESS
+                } else {
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
                 let response = HTTP_400_MISSING_SLOT;
@@ -592,8 +642,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             }
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"POST /keyboard/type") {
+        } else if request_matches(request_line, "POST", "/keyboard/type") {
             let content_len = parse_content_length(request_line).unwrap_or(0);
             if content_len > 0 && content_len <= 128 {
                 let body_start = headers_end + 4;
@@ -621,18 +670,20 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
                     }
                 }
 
-                if total_read == content_len {
-                    if let Ok(s) = core::str::from_utf8(&type_buf[..total_read]) {
-                        if let Ok(heap_str) = heapless::String::<128>::try_from(s) {
-                            if !crate::ble::try_send_command(crate::ble::BleCommand::TypeString(
-                                heap_str,
-                            )) {
-                                crate::log_msg!("BLE command queue full during type request");
-                            }
+                let response = match core::str::from_utf8(&type_buf[..total_read])
+                    .ok()
+                    .and_then(|s| heapless::String::<128>::try_from(s).ok())
+                {
+                    Some(text) if total_read == content_len => {
+                        if crate::ble::try_send_command(crate::ble::BleCommand::TypeString(text)) {
+                            HTTP_200_SUCCESS
+                        } else {
+                            crate::log_msg!("BLE command queue full during type request");
+                            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         }
                     }
-                }
-                let response = HTTP_200_SUCCESS;
+                    _ => "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nInvalid text",
+                };
                 let _ = socket.write_all(response.as_bytes()).await;
             } else {
                 let response = "HTTP/1.1 400 Bad Request\r\nContent-Length: 12\r\nConnection: close\r\n\r\nInvalid size";
@@ -640,8 +691,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             }
             let _ = socket.flush().await;
             socket.close();
-            Timer::after(Duration::from_millis(100)).await;
-        } else if starts_with(request_line, b"GET /health") {
+        } else if request_matches(request_line, "GET", "/health") {
             let mut body = heapless::String::<192>::new();
             let _ = core::fmt::write(
                 &mut body,
@@ -667,7 +717,7 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let _ = socket.write_all(body.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-        } else if starts_with(request_line, b"GET /logs") {
+        } else if request_matches(request_line, "GET", "/logs") {
             // Keep the response below the TCP send buffer. Streaming the full
             // 32-line history (up to 4 KiB) can fill it before the peer has
             // consumed the response, blocking this single-connection server.
@@ -692,12 +742,12 @@ pub async fn web_task(stack: Stack<'static>) -> ! {
             let _ = socket.write_all(body.as_bytes()).await;
             let _ = socket.flush().await;
             socket.close();
-        } else if starts_with(request_line, b"GET / ")
-            || starts_with(request_line, b"GET /index.html")
-            || starts_with(request_line, b"GET /ble_client.html")
+        } else if request_matches(request_line, "GET", "/")
+            || request_matches(request_line, "GET", "/index.html")
+            || request_matches(request_line, "GET", "/ble_client.html")
         {
             // Serve the control page and the standalone Web Bluetooth client.
-            let html = if starts_with(request_line, b"GET /ble_client.html") {
+            let html = if request_matches(request_line, "GET", "/ble_client.html") {
                 include_str!("../ble_client.html")
             } else {
                 include_str!("index.html")
@@ -738,41 +788,56 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn starts_with(data: &[u8], prefix: &[u8]) -> bool {
-    data.len() >= prefix.len() && &data[..prefix.len()] == prefix
+fn request_target(headers: &[u8]) -> Option<(&str, &str)> {
+    let request_line = core::str::from_utf8(headers).ok()?.split("\r\n").next()?;
+    let mut fields = request_line.split_ascii_whitespace();
+    let method = fields.next()?;
+    let target = fields.next()?;
+    (fields.next() == Some("HTTP/1.1") && fields.next().is_none()).then_some((method, target))
+}
+
+fn request_matches(headers: &[u8], method: &str, path: &str) -> bool {
+    request_target(headers).is_some_and(|(actual_method, target)| {
+        actual_method == method
+            && target
+                .strip_prefix(path)
+                .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('?'))
+    })
+}
+
+fn header_value<'a>(headers: &'a [u8], name: &str) -> Option<&'a str> {
+    let mut value = None;
+    for line in core::str::from_utf8(headers).ok()?.split("\r\n").skip(1) {
+        let (header_name, header_value) = line.split_once(':')?;
+        if header_name.eq_ignore_ascii_case(name) && value.replace(header_value.trim()).is_some() {
+            return None;
+        }
+    }
+    value
 }
 
 fn parse_slot(headers: &[u8]) -> Option<usize> {
-    if find_subsequence(headers, b"slot=0").is_some() {
-        Some(0)
-    } else if find_subsequence(headers, b"slot=1").is_some() {
-        Some(1)
-    } else if find_subsequence(headers, b"slot=2").is_some() {
-        Some(2)
-    } else {
-        None
+    let (_, target) = request_target(headers)?;
+    let query = target.split_once('?')?.1;
+    let value = query.split('&').find_map(|item| {
+        item.split_once('=')
+            .and_then(|(name, value)| (name == "slot").then_some(value))
+    })?;
+    match value {
+        "0" => Some(0),
+        "1" => Some(1),
+        "2" => Some(2),
+        _ => None,
     }
 }
 
 fn parse_content_length(headers: &[u8]) -> Option<usize> {
-    let s = core::str::from_utf8(headers).ok()?;
-    for line in s.split("\r\n") {
-        let bytes = line.as_bytes();
-        if bytes.len() >= 15 && bytes[..15].eq_ignore_ascii_case(b"content-length:") {
-            return line[15..].trim().parse().ok();
-        }
-    }
-    None
+    header_value(headers, "content-length")?.parse().ok()
 }
 
 fn parse_hex_u32_header(headers: &[u8], name: &[u8]) -> Option<u32> {
-    let s = core::str::from_utf8(headers).ok()?;
-    for line in s.split("\r\n") {
-        let bytes = line.as_bytes();
-        if bytes.len() >= name.len() && bytes[..name.len()].eq_ignore_ascii_case(name) {
-            let value = line[name.len()..].trim().trim_start_matches("0x");
-            return u32::from_str_radix(value, 16).ok();
-        }
-    }
-    None
+    let name = core::str::from_utf8(name).ok()?.trim_end_matches(':');
+    let value = header_value(headers, name)?;
+    let value = value.strip_prefix("0x").unwrap_or(value);
+    u32::from_str_radix(value, 16).ok()
 }

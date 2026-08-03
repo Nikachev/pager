@@ -18,8 +18,8 @@ def flash_http(url, bin_path):
 
     print(f"Connecting to {host}:{port}{path} (Size: {len(binary_data)} bytes)...")
     connected = False
-    start_time = time.time()
-    while time.time() - start_time < 20:
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(10)
@@ -28,6 +28,7 @@ def flash_http(url, bin_path):
             connected = True
             break
         except Exception:
+            s.close()
             time.sleep(0.5)
 
     if not connected:
@@ -63,14 +64,25 @@ def flash_http(url, bin_path):
         return 1
 
     print("\nUpload complete! Waiting for board response...")
-    resp = s.recv(1024).decode("utf-8", errors="ignore")
-    s.close()
-    print(f"Server response: {resp.strip()}")
-    if "200" in resp:
+    response = bytearray()
+    try:
+        while b"\r\n\r\n" not in response:
+            chunk = s.recv(1024)
+            if not chunk:
+                break
+            response.extend(chunk)
+    except socket.timeout:
+        pass
+    finally:
+        s.close()
+
+    status_line = bytes(response).split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+    print(f"Server response: {status_line}")
+    if status_line.startswith("HTTP/") and len(status_line.split()) >= 2 and status_line.split()[1] == "200":
         print("[+] HTTP OTA update succeeded! Board will self-flash and reboot.")
         return 0
     else:
-        print(f"[-] HTTP OTA update failed with response: {resp}")
+        print(f"[-] HTTP OTA update failed with response: {status_line or 'no HTTP response'}")
         return 1
 
 if __name__ == "__main__":

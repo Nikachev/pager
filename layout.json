@@ -1,0 +1,11 @@
+{
+  "flash_page_size": 4096,
+  "bootloader_size": 32768,
+  "slot_a_manifest": 32768,
+  "slot_b_manifest": 532480,
+  "manifest_page_size": 4096,
+  "slot_image_size": 495616,
+  "boot_control_page0": 1032192,
+  "boot_control_page1": 1036288,
+  "storage_start": 1040384
+}

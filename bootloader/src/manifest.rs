@@ -45,8 +45,13 @@ impl Manifest {
             return false;
         }
         FIRMWARE_SIGNING_PUBLIC_KEYS.iter().any(|bytes| {
-            VerifyingKey::from_bytes(bytes)
-                .is_ok_and(|key| key.verify_strict(&self.signed_message(), &Signature::from_bytes(&self.signature)).is_ok())
+            VerifyingKey::from_bytes(bytes).is_ok_and(|key| {
+                key.verify_strict(
+                    &self.signed_message(),
+                    &Signature::from_bytes(&self.signature),
+                )
+                .is_ok()
+            })
         })
     }
 }

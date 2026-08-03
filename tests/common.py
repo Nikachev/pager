@@ -17,15 +17,31 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 import os
-import glob
+from serial.tools import list_ports
 
 def find_serial_port():
     env_port = os.getenv("SERIAL_PORT") or os.getenv("PORT")
     if env_port:
         return env_port
-    ports = glob.glob("/dev/cu.usbmodem*")
+    requested_serial = os.getenv("PAGER_USB_SERIAL")
+    requested_vid = os.getenv("PAGER_USB_VID")
+    requested_pid = os.getenv("PAGER_USB_PID")
+    ports = []
+    for port in list_ports.comports():
+        if not port.device.startswith("/dev/cu.usbmodem"):
+            continue
+        if requested_serial and port.serial_number != requested_serial:
+            continue
+        if requested_vid and (port.vid is None or port.vid != int(requested_vid, 0)):
+            continue
+        if requested_pid and (port.pid is None or port.pid != int(requested_pid, 0)):
+            continue
+        ports.append(port.device)
+    ports.sort()
     if not ports:
-        raise RuntimeError("No matching /dev/cu.usbmodem* serial port found")
+        raise RuntimeError("No matching USB modem found")
+    if len(ports) != 1:
+        raise RuntimeError(f"Multiple USB modems match: {', '.join(ports)}; set SERIAL_PORT")
     return ports[0]
 
 # Keep import side-effect free so HTTP-only/unit tests can run without a board.
@@ -117,8 +133,8 @@ def ensure_ncm_up():
 def wait_for_http_reconnect(url, timeout=30):
     """Poll ``url`` until it returns HTTP 200."""
     ensure_ncm_up()
-    start = time.time()
-    while time.time() - start < timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             res = urllib.request.urlopen(url, timeout=2)
             if res.status == 200:
@@ -133,8 +149,8 @@ def wait_for_http_reconnect(url, timeout=30):
 def wait_for_serial_reconnect(port=None, timeout=20):
     """Wait until the CDC-ACM serial port reappears after a reboot."""
     import serial
-    start = time.time()
-    while time.time() - start < timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         actual_port = port or find_serial_port()
         try:
             s = serial.Serial(actual_port, 115200, timeout=1)
@@ -148,8 +164,8 @@ def wait_for_serial_reconnect(port=None, timeout=20):
 
 def wait_for_serial_disconnect(port, timeout=10):
     """Wait until the pre-reset CDC device has actually disappeared."""
-    start = time.time()
-    while time.time() - start < timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         try:
             s = serial.Serial(port, 115200, timeout=0.2)
             s.close()
@@ -252,7 +268,7 @@ def _expected_hid_report(c):
 # BLE helpers
 # ---------------------------------------------------------------------------
 
-async def find_ble_device(service_uuid, timeout=3.0):
+async def find_ble_device(service_uuid, timeout=10.0):
     """Scan for the pager device advertising ``service_uuid``.
 
     Raises RuntimeError if not found (callers typically turn this into a

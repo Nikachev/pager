@@ -157,9 +157,20 @@ pub const DHCP_POOL_END: Ipv4Address = Ipv4Address::new(192, 168, 42, 50);
 
 pub const USB_VENDOR_ID: u16 = 0x1209;
 pub const USB_PRODUCT_ID: u16 = 0x0001;
-pub const USB_MANUFACTURER: &str = "Antigravity";
+pub const USB_MANUFACTURER: &str = "Nikachev";
 pub const USB_PRODUCT_NAME: &str = "Pager NCM+ACM";
-pub const USB_SERIAL_NUMBER: &str = "12345678";
+const FICR_DEVICEID0: *const u32 = 0x1000_0060 as *const u32;
+const FICR_DEVICEID1: *const u32 = 0x1000_0064 as *const u32;
+
+fn factory_usb_serial() -> heapless::String<16> {
+    // DEVICEID is programmed by Nordic at manufacture and is readable on
+    // nRF52840 without enabling peripheral clocks.
+    let low = unsafe { core::ptr::read_volatile(FICR_DEVICEID0) };
+    let high = unsafe { core::ptr::read_volatile(FICR_DEVICEID1) };
+    let mut serial = heapless::String::new();
+    let _ = core::fmt::write(&mut serial, format_args!("{:08x}{:08x}", high, low));
+    serial
+}
 
 pub const HOST_MAC_ADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x01];
 pub const DEVICE_MAC_ADDR: [u8; 6] = [0x02, 0x00, 0x00, 0x00, 0x00, 0x02];
@@ -275,9 +286,7 @@ async fn dhcp_task(stack: Stack<'static>) -> ! {
 
 #[embassy_executor::task]
 async fn usb_logger_task(mut sender: Sender<'static, MyDriver>) -> ! {
-    let _ = sender
-        .write_all(b"nice!nano v2 serial logger started.\r\n")
-        .await;
+    let _ = sender.write_all(b"Pager serial logger started.\r\n").await;
     loop {
         let msg = LOG_CHANNEL.receive().await;
         if sender.write_all(msg.as_bytes()).await.is_err() {
@@ -309,18 +318,14 @@ async fn persist_keyboard_state_task(
             (state.active_slot, state.bonds.clone())
         });
         let mut flash = flash_mutex.lock().await;
-        match embassy_futures::select::select(
-            flash::save_persistent_state(&mut *flash, active_slot, &bonds),
-            Timer::after(Duration::from_millis(250)),
-        )
-        .await
-        {
-            embassy_futures::select::Either::First(Ok(())) => {}
-            embassy_futures::select::Either::First(Err(error)) => {
+        // NVMC operations are not cancellation-safe: aborting an erase or
+        // program future halfway through can leave the flash/MPSL subsystem in
+        // an undefined state and take USB-NCM down with it. Let this bounded
+        // one-page write finish, then report a real driver error.
+        match flash::save_persistent_state(&mut *flash, active_slot, &bonds).await {
+            Ok(()) => {}
+            Err(error) => {
                 log_msg!("PERSIST_STATE:ERROR:{:?}", error);
-            }
-            embassy_futures::select::Either::Second(_) => {
-                log_msg!("PERSIST_STATE:TIMEOUT");
             }
         }
     }
@@ -405,6 +410,7 @@ async fn usb_receiver_task(
                                 let mut writer = crate::flash::OtaWriter::new(
                                     &mut *flash,
                                     web::inactive_slot_manifest_addr(),
+                                    web::inactive_slot_manifest_addr() + web::MAX_BIN_SIZE as u32,
                                 );
 
                                 let mut total_read = 0;
@@ -450,10 +456,11 @@ async fn usb_receiver_task(
                                         crate::flash::stop_flashing();
                                         continue;
                                     }
-                                    drop(writer);
+                                    let _ = writer;
                                     match crate::flash::package_targets_slot(
                                         &mut *flash,
                                         web::inactive_slot_manifest_addr(),
+                                        content_len,
                                         web::inactive_slot(),
                                     )
                                     .await
@@ -600,7 +607,7 @@ async fn main(spawner: Spawner) {
 
     // --- trouble host stack ---
     let address = Address::random(ble_static_random_address());
-    info!("TrouBLE-HID: our address = {:?}", address);
+    info!("Pager HID: our address = {:?}", address);
 
     let mut resources: HostResources<DefaultPacketPool, 1, 2> = HostResources::new();
     let stack = trouble_host::new(sdc, &mut resources)
@@ -614,10 +621,11 @@ async fn main(spawner: Spawner) {
     let mut peripheral = stack.peripheral();
 
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: "TrouBLE-Pager",
+        name: "Pager",
         appearance: &appearance::human_interface_device::GENERIC_HUMAN_INTERFACE_DEVICE,
     }))
     .unwrap();
+    server.register_discovery_services();
 
     let mut adv_data = [0u8; 31];
     let len = AdStructure::encode_slice(
@@ -635,7 +643,7 @@ async fn main(spawner: Spawner) {
     .unwrap();
     let mut scan_data = [0u8; 31];
     let scan_len = AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(b"TrouBLE-Pager")],
+        &[AdStructure::CompleteLocalName(b"Pager")],
         &mut scan_data[..],
     )
     .unwrap();
@@ -651,6 +659,7 @@ async fn main(spawner: Spawner) {
 
     // --- USB Initialization ---
     static VBUS_DETECT: StaticCell<SoftwareVbusDetect> = StaticCell::new();
+    static USB_SERIAL: StaticCell<heapless::String<16>> = StaticCell::new();
     let vbus_detect: &'static SoftwareVbusDetect =
         &*VBUS_DETECT.init(SoftwareVbusDetect::new(true, true));
     vbus_detect.detected(true);
@@ -662,7 +671,7 @@ async fn main(spawner: Spawner) {
     let mut usb_config = Config::new(USB_VENDOR_ID, USB_PRODUCT_ID);
     usb_config.manufacturer = Some(USB_MANUFACTURER);
     usb_config.product = Some(USB_PRODUCT_NAME);
-    usb_config.serial_number = Some(USB_SERIAL_NUMBER);
+    usb_config.serial_number = Some(USB_SERIAL.init(factory_usb_serial()).as_str());
     usb_config.max_power = 100;
     usb_config.max_packet_size_0 = 64;
     usb_config.device_class = 0xEF;
@@ -750,11 +759,15 @@ async fn main(spawner: Spawner) {
         crate::log_msg!("BOOT:TRIAL_CONFIRM_SKIPPED_FOR_TEST");
     }
 
-    info!("TrouBLE-Pager HID & Web Server: starting advertising");
+    info!("Pager HID & Web Server: starting advertising");
     let _ = embassy_futures::join::join(runner.run(), async {
         loop {
             crate::log_msg!("BLE:ADVERTISING");
-            let advertiser = peripheral
+            // Refresh the live security database only between connections.
+            // Updating it while an encrypted link is completing pairing can
+            // invalidate the central's in-flight LTK transaction.
+            sync_active_bond(&stack);
+            let advertiser = match peripheral
                 .advertise(
                     &Default::default(),
                     Advertisement::ConnectableScannableUndirected {
@@ -763,15 +776,26 @@ async fn main(spawner: Spawner) {
                     },
                 )
                 .await
-                .unwrap();
-            info!("TrouBLE-Pager: waiting for connection...");
+            {
+                Ok(advertiser) => advertiser,
+                Err(error) => {
+                    crate::log_msg!("BLE:ADVERTISE_ERROR:{:?}", error);
+                    Timer::after(Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+            info!("Pager: waiting for connection...");
             let conn = match embassy_futures::select::select(
                 advertiser.accept(),
                 ble::BLE_COMMANDS.receive(),
             )
             .await
             {
-                Either::First(conn) => conn.unwrap(),
+                Either::First(Ok(conn)) => conn,
+                Either::First(Err(error)) => {
+                    crate::log_msg!("BLE:ACCEPT_ERROR:{:?}", error);
+                    continue;
+                }
                 Either::Second(ble::BleCommand::SyncActiveBond) => {
                     sync_active_bond(&stack);
                     continue;
@@ -781,12 +805,23 @@ async fn main(spawner: Spawner) {
             // Configure security before starting the attribute server, as the
             // first service-discovery request may arrive immediately after
             // the link is accepted.
-            let _ = conn.set_bondable(true);
-            let conn = conn.with_attribute_server(&server).unwrap();
-            info!("TrouBLE-Pager: connection established!");
+            // Existing bonds can reconnect at any time, but new pairing is
+            // accepted only after the physical-USB control plane explicitly
+            // enabled pairing mode for the active profile.
+            let pairing_mode = ble::KEYBOARD_STATE.lock(|state| state.borrow().pairing_mode);
+            let _ = conn.set_bondable(pairing_mode);
+            let conn = match conn.with_attribute_server(&server) {
+                Ok(conn) => conn,
+                Err(error) => {
+                    crate::log_msg!("BLE:GATT_SERVER_ERROR:{:?}", error);
+                    continue;
+                }
+            };
+            info!("Pager: connection established!");
             crate::log_msg!("BLE:CONNECTED");
 
             let mut status = 0u8;
+            let mut persist_after_disconnect = false;
             loop {
                 match embassy_futures::select::select3(
                     conn.next(),
@@ -797,7 +832,7 @@ async fn main(spawner: Spawner) {
                 {
                     Either3::First(event) => match event {
                         GattConnectionEvent::Disconnected { reason } => {
-                            info!("TrouBLE-Pager: disconnected {:?}", reason);
+                            info!("Pager: disconnected {:?}", reason);
                             crate::log_msg!("BLE:DISCONNECTED:{:?}", reason);
                             break;
                         }
@@ -806,7 +841,7 @@ async fn main(spawner: Spawner) {
                             bond,
                         } => {
                             info!(
-                                "TrouBLE-Pager: pairing complete! Level: {:?}, Bond: {:?}",
+                                "Pager: pairing complete! Level: {:?}, Bond: {:?}",
                                 security_level, bond
                             );
                             crate::ble::KEYBOARD_STATE.lock(|state| {
@@ -815,11 +850,13 @@ async fn main(spawner: Spawner) {
                                 state.bonds[active_slot] = bond.clone();
                                 state.pairing_mode = false;
                             });
-                            sync_active_bond(&stack);
-                            ble::PERSIST_STATE.signal(());
+                            // NVMC persistence must not overlap an active BLE
+                            // security procedure. Save after this central is
+                            // disconnected and the connection object is dropped.
+                            persist_after_disconnect = true;
                         }
                         GattConnectionEvent::PairingFailed(err) => {
-                            warn!("TrouBLE-Pager: pairing failed: {:?}", err);
+                            warn!("Pager: pairing failed: {:?}", err);
                         }
                         GattConnectionEvent::Gatt { event } => {
                             // Every ATT event must be accepted and its reply
@@ -919,6 +956,9 @@ async fn main(spawner: Spawner) {
                             .await;
                     }
                 }
+            }
+            if persist_after_disconnect {
+                ble::PERSIST_STATE.signal(());
             }
         }
     })
