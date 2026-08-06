@@ -1,14 +1,14 @@
 # Pager firmware
 
-Custom bare-metal firmware for the **Pager** device (nRF52840, based on a nice!nano v2 board) running async Rust with **Embassy**. It exposes a vendor-specific WebUSB control plane, signed staged firmware updates, USB CDC-ACM serial logs, and BLE HID keyboard emulation built on `nrf-sdc`.
+Custom bare-metal firmware for the **Pager** device (nRF52840, based on a nice!nano v2 board) running async Rust with **Embassy**. It exposes a vendor-specific WebUSB control plane, Ed25519-signed UF2 firmware updates, USB CDC-ACM serial logs, and BLE HID keyboard emulation built on `nrf-sdc`.
 
 ---
 
 ## 🚀 Key Features
 
-*   **WebUSB Control Plane**: Direct USB bulk interface for control commands and signed DFU updates accessible from Chrome/Chromium via WebUSB (`webusb_client.html`).
-*   **A/B WebUSB & Serial DFU**: Upload a signed package into the inactive bank, boot it once as a trial, and automatically restore the confirmed bank if it resets before confirmation.
-*   **CDC-ACM Serial Logging**: Stream real-time diagnostic logs and emergency DFU commands over standard USB serial (`/dev/cu.usbmodem*`).
+*   **Single-Slot Secure UF2 Bootloader**: 48 KB bootloader with Ed25519 digital signature validation, SHA-256 integrity verification, and Double-Tap reset trigger.
+*   **WebUSB Control Plane**: Direct USB bulk interface for control commands and signed DFU updates accessible via WebUSB.
+*   **CDC-ACM Serial Logging**: Stream real-time diagnostic logs over standard USB serial (`/dev/cu.usbmodem*`).
 *   **BLE GATT & HID Keyboard**: Advertises as `Pager` and emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
 *   **Web Bluetooth UI**: A static client webpage (`ble_client.html`) using Chrome Web Bluetooth to connect directly to the board over BLE, control the LED, and view live heartbeat logs.
 
@@ -27,10 +27,9 @@ The WebUSB and CDC command interfaces trust **only the host that is physically c
 
 | Partition | Start Address | Size | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Bootloader** | `0x00000` | 32 KiB (`0x08000`) | Signature verification, A/B selection, trial and rollback |
-| **Slot A** | `0x08000` | 488 KiB | 4 KiB manifest + 484 KiB image at `0x09000` |
-| **Slot B** | `0x82000` | 488 KiB | 4 KiB manifest + 484 KiB image at `0x83000` |
-| **Boot-control journal** | `0xFC000` | 8 KiB | Two-page power-loss-safe confirmed/trial record |
+| **Bootloader** | `0x00000` | 48 KiB (`0x0C000`) | Ed25519 signature verification, Double-Tap reset, USB UF2 DFU |
+| **Manifest Header** | `0x0C000` | 256 B | Digital signature (`PGRFW001`), SHA-256 digest, metadata |
+| **Main Application** | `0x0C100` | 903.75 KiB | Embassy async firmware (`pager`) |
 | **Storage & bonds** | `0xFE000` | 8 KiB | Persistent BLE profile and bond state |
 
 ---
@@ -85,48 +84,30 @@ key and deploying that bootloader first.
 A standard `Makefile` is available for building, flashing, and testing:
 
 ```bash
-# 1. Build a release image for one slot using cargo xtask (Pure Rust)
-cargo run --target aarch64-apple-darwin --package xtask -- build
-# Or via Makefile:
-make build SLOT=A
+# 1. Build release firmware & dist/pager.uf2
+make build
 
-# 2. Flash via WebUSB DFU (Default method)
-make flash               # or: make flash-webusb
+# 2. Flash via USB UF2 Bootloader
+make flash               # or: python3 flash_uf2.py
 
-# 3. Flash via USB Serial DFU (Backup/Reserve method)
-make flash-serial
-
-# 4. Flash via SWD Probe (Hardware Recovery)
+# 3. Flash via SWD Probe (Hardware Recovery)
 make flash-swd
-
-# 5. Run HIL Integration Tests
-make hil                 # or: make test
 ```
 
 ---
 
 ## ⚡ How to Flash
 
-### 1. Flash via WebUSB DFU (Default)
-Upload a signed package over the WebUSB vendor bulk interface:
+### 1. Flash via USB UF2 Bootloader (Default)
+Transfer the Ed25519-signed UF2 image over USB:
 ```bash
 make flash
 ```
-The default target queries the device for its inactive slot and builds the package for that slot. Use `make flash-webusb SLOT=A` or `SLOT=B` to override.
 
-Alternatively, serve `webusb_client.html` over HTTPS or open it in Chrome to update interactively.
-
-### 2. Flash via USB Serial DFU (Backup/Reserve)
-Stream binary chunks over USB serial interface:
+### 2. Flash via SWD Probe (Hardware Recovery)
+Program both the 48 KB bootloader and signed application payload over SWD using `probe-rs`:
 ```bash
-make flash-serial SLOT=B
-```
-Or manually: `python3 scripts/flash_serial.py /dev/cu.usbmodem123456783 dist/pager-B.signed.pkg`
-
-### 3. Flash via SWD Probe (Hardware Recovery)
-If the board is unresponsive or unbricking is required, program directly over SWD using `probe-rs`:
-```bash
-make flash-swd SLOT=A
+make flash-swd
 ```
 
 ---

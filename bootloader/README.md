@@ -1,31 +1,25 @@
-# Pager A/B bootloader
+# Pager Single-Slot Secure UF2 Bootloader
 
-The bootloader does not copy a running image. Each 488 KiB bank contains a
-4 KiB signed manifest followed by a 484 KiB independently linked application.
-It validates both manifests with SHA-256 and Ed25519, then starts a newer image
-as a trial. The trial is written to a two-page journal at `0xfc000..0xfe000`
-before the jump. The application confirms itself after core initialization; a
-reset before that confirmation launches the last confirmed image instead.
+The bootloader occupies the first 48 KiB (`0x00000 .. 0x0C000`) of Flash memory on nRF52840.
+It validates the Ed25519 digital signature and SHA-256 digest of the manifest header (`PGRFW001`) at `0x0C000`, verifies the vector table at `0x0C100`, and jumps directly into the main application.
 
-The next journal record is always written to the page not holding the current
-record, so loss of power while erasing or writing retains a complete earlier
-record. Both public signing keys are trusted, enabling a staged key rotation.
+---
 
-Build the bootloader:
+## 🔑 Key Features
+- **Single-Slot Memory Map**: Application partition from `0x0C000` to `0xFE000` (904 KiB total).
+- **Ed25519 & SHA-256 Validation**: Blocks unsigned or corrupted images from executing.
+- **Double-Tap Reset Trigger**: Double-pressing the reset button within 500 ms forces entry into DFU mode.
+- **Vendor-Specific USB Bulk DFU**: Fast direct USB Bulk endpoints for UF2 flashing via `python3 flash_uf2.py`.
 
-```sh
-RUSTFLAGS='-C link-arg=-Tlink.x' cargo build --manifest-path bootloader/Cargo.toml --release
-```
+---
 
-Create a Slot A package for the first migration:
+## 🔨 Building the Bootloader
 
 ```sh
-make sign SLOT=A VERSION=1
+cargo build --manifest-path bootloader/Cargo.toml --release
 ```
 
-`make flash-swd` installs the bootloader and application binaries via SWD. Subsequent updates use
-the inactive slot via WebUSB (`make flash-webusb SLOT=B VERSION=2`).
+---
 
-The measured bootloader occupies `0x78c0` bytes, leaving `0x740` bytes inside
-the 32 KiB boot partition. Keep SWD recovery available and revisit that budget
-before adding material functionality.
+## ⚡ Flashing
+Use `make flash-swd` to write both the release bootloader and signed application via SWD probe.

@@ -2,8 +2,6 @@
 rustflags = [
   # Use the linker script link.x provided by cortex-m-rt
   "-C", "link-arg=-Tlink.x",
-  # Use the linker script defmt.x provided by defmt
-  "-C", "link-arg=-Tdefmt.x",
 ]
 
 [build]

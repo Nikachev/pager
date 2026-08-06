@@ -127,9 +127,7 @@ async fn watchdog_task() -> ! {
     loop {
         Timer::after(Duration::from_secs(2)).await;
         let mask = TASK_HEARTBEATS.swap(0, Ordering::Relaxed);
-        if (mask & (HEARTBEAT_BLINK as u32)) != 0
-            || crate::flash::IS_FLASHING.load(Ordering::Relaxed)
-        {
+        if (mask & (HEARTBEAT_BLINK as u32)) != 0 {
             if option_env!("PAGER_SKIP_WATCHDOG_FEED") != Some("1") {
                 unsafe { core::ptr::write_volatile(WDT_RR0, WDT_RELOAD_MAGIC) };
             }
@@ -159,7 +157,7 @@ fn build_sdc<'d, const N: usize>(
 }
 
 pub const USB_VENDOR_ID: u16 = 0x1209;
-pub const USB_PRODUCT_ID: u16 = 0x0001;
+pub const USB_PRODUCT_ID: u16 = 0x0002;
 pub const USB_MANUFACTURER: &str = "Nikachev";
 pub const USB_PRODUCT_NAME: &str = "Pager WebUSB+ACM";
 const FICR_DEVICEID0: *const u32 = 0x1000_0060 as *const u32;
@@ -301,18 +299,9 @@ async fn main(spawner: Spawner) {
         let bonds = persistent.map(|(_, b)| b).unwrap_or_default();
         crate::ble::KEYBOARD_STATE.lock(|state| {
             let mut s = state.borrow_mut();
-            s.active_slot = web::running_slot() as usize;
+            s.active_slot = 0;
             s.bonds = bonds;
         });
-        if option_env!("PAGER_SKIP_TRIAL_CONFIRM") != Some("1") {
-            match crate::flash::confirm_running_slot(&mut *flash, web::running_slot()).await {
-                Ok(true) => crate::log_msg!("BOOT:TRIAL_CONFIRMED:slot={}", web::running_slot()),
-                Ok(false) => {}
-                Err(error) => crate::log_msg!("BOOT:TRIAL_CONFIRM_ERROR:{:?}", error),
-            }
-        } else {
-            crate::log_msg!("BOOT:TRIAL_CONFIRM_SKIPPED_FOR_TEST");
-        }
     }
 
     let sdc_p = sdc::Peripherals::new(
@@ -433,7 +422,6 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(usb_logger_task(acm_sender)));
     spawner.spawn(unwrap!(usb_receiver_task(acm_receiver, flash_mutex)));
     spawner.spawn(unwrap!(webusb_task(webusb_transport)));
-    spawner.spawn(unwrap!(web::ota_consumer_task(flash_mutex)));
     spawner.spawn(unwrap!(persist_keyboard_state_task(flash_mutex)));
     spawner.spawn(unwrap!(heartbeat_task()));
 
