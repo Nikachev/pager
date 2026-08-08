@@ -6,13 +6,13 @@ mod flash;
 mod led;
 mod protocol;
 mod serial_task;
-mod web;
+mod usb_detach;
 mod webusb;
-mod webusb_handler;
+mod webusb_task;
 
 pub use led::{blink_task, LED_MODE};
 pub use serial_task::{usb_logger_task, usb_receiver_task};
-pub use webusb_handler::{webusb_reply, webusb_task};
+pub use webusb_task::{webusb_reply, webusb_task};
 
 use ble::Server;
 use core::cell::RefCell;
@@ -27,7 +27,7 @@ use embassy_nrf::mode::Async;
 use embassy_nrf::peripherals::RNG;
 use embassy_nrf::usb::vbus_detect::SoftwareVbusDetect;
 use embassy_nrf::usb::Driver;
-use embassy_nrf::{bind_interrupts, rng, usb};
+use embassy_nrf::{bind_interrupts, pac, rng, usb};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::blocking_mutex::Mutex as SyncMutex;
 use embassy_sync::channel::Channel;
@@ -51,7 +51,7 @@ bind_interrupts!(struct Irqs {
     USBD => usb::InterruptHandler<embassy_nrf::peripherals::USBD>;
 });
 
-pub type MyDriver = Driver<'static, &'static SoftwareVbusDetect>;
+pub type NrfUsbDriver = Driver<'static, &'static SoftwareVbusDetect>;
 
 #[embassy_executor::task]
 async fn mpsl_task(mpsl: &'static MultiprotocolServiceLayer<'static>) -> ! {
@@ -97,22 +97,17 @@ macro_rules! log_msg {
 const L2CAP_TXQ: u8 = 3;
 const L2CAP_RXQ: u8 = 3;
 
-const WDT_TASKS_START: *mut u32 = 0x4001_0000 as *mut u32;
-const WDT_CRV: *mut u32 = 0x4001_0504 as *mut u32;
-const WDT_RREN: *mut u32 = 0x4001_0508 as *mut u32;
-const WDT_CONFIG: *mut u32 = 0x4001_050C as *mut u32;
-const WDT_RR0: *mut u32 = 0x4001_0600 as *mut u32;
 const WDT_RELOAD_MAGIC: u32 = 0x6E52_4635;
 const WDT_RELOAD_TICKS: u32 = 10 * 32_768;
 
 fn start_watchdog() {
-    unsafe {
-        core::ptr::write_volatile(WDT_CONFIG, 0b01);
-        core::ptr::write_volatile(WDT_CRV, WDT_RELOAD_TICKS);
-        core::ptr::write_volatile(WDT_RREN, 1);
-        core::ptr::write_volatile(WDT_TASKS_START, 1);
-        core::ptr::write_volatile(WDT_RR0, WDT_RELOAD_MAGIC);
-    }
+    pac::WDT.config().write_value(pac::wdt::regs::Config(0b01));
+    pac::WDT.crv().write_value(WDT_RELOAD_TICKS);
+    pac::WDT.rren().write_value(pac::wdt::regs::Rren(1));
+    pac::WDT.tasks_start().write_value(1);
+    pac::WDT
+        .rr(0)
+        .write_value(pac::wdt::regs::Rr(WDT_RELOAD_MAGIC));
 }
 
 pub const HEARTBEAT_BLINK: u8 = 1 << 0;
@@ -129,7 +124,9 @@ async fn watchdog_task() -> ! {
         let mask = TASK_HEARTBEATS.swap(0, Ordering::Relaxed);
         if (mask & (HEARTBEAT_BLINK as u32)) != 0 {
             if option_env!("PAGER_SKIP_WATCHDOG_FEED") != Some("1") {
-                unsafe { core::ptr::write_volatile(WDT_RR0, WDT_RELOAD_MAGIC) };
+                pac::WDT
+                    .rr(0)
+                    .write_value(pac::wdt::regs::Rr(WDT_RELOAD_MAGIC));
             }
         } else {
             defmt::warn!("Watchdog: missing task heartbeat mask {:x}", mask);
@@ -160,20 +157,18 @@ pub const USB_VENDOR_ID: u16 = 0x1209;
 pub const USB_PRODUCT_ID: u16 = 0x0002;
 pub const USB_MANUFACTURER: &str = "Nikachev";
 pub const USB_PRODUCT_NAME: &str = "Pager WebUSB+ACM";
-const FICR_DEVICEID0: *const u32 = 0x1000_0060 as *const u32;
-const FICR_DEVICEID1: *const u32 = 0x1000_0064 as *const u32;
 
 fn factory_usb_serial() -> heapless::String<16> {
-    let low = unsafe { core::ptr::read_volatile(FICR_DEVICEID0) };
-    let high = unsafe { core::ptr::read_volatile(FICR_DEVICEID1) };
+    let low = pac::FICR.deviceid(0).read();
+    let high = pac::FICR.deviceid(1).read();
     let mut serial = heapless::String::new();
     let _ = core::fmt::write(&mut serial, format_args!("{:08x}{:08x}", high, low));
     serial
 }
 
 fn ble_static_random_address() -> [u8; 6] {
-    let low = unsafe { core::ptr::read_volatile(FICR_DEVICEID0) };
-    let high = unsafe { core::ptr::read_volatile(FICR_DEVICEID1) };
+    let low = pac::FICR.deviceid(0).read();
+    let high = pac::FICR.deviceid(1).read();
     let mut addr = [
         (low & 0xFF) as u8,
         ((low >> 8) & 0xFF) as u8,
@@ -187,7 +182,7 @@ fn ble_static_random_address() -> [u8; 6] {
 }
 
 #[embassy_executor::task]
-async fn vbus_detect_task(vbus_detect: &'static SoftwareVbusDetect) -> ! {
+async fn dummy_vbus_detect_task(vbus_detect: &'static SoftwareVbusDetect) -> ! {
     loop {
         vbus_detect.detected(true);
         Timer::after(Duration::from_secs(1)).await;
@@ -195,7 +190,7 @@ async fn vbus_detect_task(vbus_detect: &'static SoftwareVbusDetect) -> ! {
 }
 
 #[embassy_executor::task]
-async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, MyDriver>) -> ! {
+async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, NrfUsbDriver>) -> ! {
     usb.run().await
 }
 
@@ -215,12 +210,12 @@ async fn persist_keyboard_state_task(
 ) -> ! {
     loop {
         ble::PERSIST_STATE.wait().await;
-        let (active_slot, bonds) = ble::KEYBOARD_STATE.lock(|state| {
+        let (active_profile, bonds) = ble::KEYBOARD_STATE.lock(|state| {
             let state = state.borrow();
-            (state.active_slot, state.bonds.clone())
+            (state.active_profile, state.bonds.clone())
         });
         let mut flash = flash_mutex.lock().await;
-        match flash::save_persistent_state(&mut *flash, active_slot, &bonds).await {
+        match flash::save_persistent_state(&mut *flash, active_profile, &bonds).await {
             Ok(()) => {}
             Err(error) => {
                 log_msg!("PERSIST_STATE:ERROR:{:?}", error);
@@ -241,7 +236,7 @@ fn sync_active_bond<C: Controller>(stack: &trouble_host::Stack<'_, C, DefaultPac
     }
     let active_bond = ble::KEYBOARD_STATE.lock(|state| {
         let state = state.borrow();
-        state.bonds[state.active_slot].clone()
+        state.bonds[state.active_profile].clone()
     });
     if let Some(bond) = active_bond {
         if stack.add_bond_information(bond).is_err() {
@@ -299,7 +294,7 @@ async fn main(spawner: Spawner) {
         let bonds = persistent.map(|(_, b)| b).unwrap_or_default();
         crate::ble::KEYBOARD_STATE.lock(|state| {
             let mut s = state.borrow_mut();
-            s.active_slot = 0;
+            s.active_profile = 0;
             s.bonds = bonds;
         });
     }
@@ -350,13 +345,13 @@ async fn main(spawner: Spawner) {
     )
     .unwrap();
 
-    unsafe {
-        core::ptr::write_volatile(0x40027504 as *mut u32, 0);
-    }
+    pac::USBD
+        .usbpullup()
+        .write_value(pac::usbd::regs::Usbpullup(0));
     Timer::after(Duration::from_millis(500)).await;
-    unsafe {
-        core::ptr::write_volatile(0x40027504 as *mut u32, 1);
-    }
+    pac::USBD
+        .usbpullup()
+        .write_value(pac::usbd::regs::Usbpullup(1));
 
     static VBUS_DETECT: StaticCell<SoftwareVbusDetect> = StaticCell::new();
     static USB_SERIAL: StaticCell<heapless::String<16>> = StaticCell::new();
@@ -366,7 +361,7 @@ async fn main(spawner: Spawner) {
     vbus_detect.ready();
     let driver = Driver::new(p.USBD, Irqs, vbus_detect);
 
-    spawner.spawn(unwrap!(vbus_detect_task(vbus_detect)));
+    spawner.spawn(unwrap!(dummy_vbus_detect_task(vbus_detect)));
 
     let mut usb_config = Config::new(USB_VENDOR_ID, USB_PRODUCT_ID);
     usb_config.manufacturer = Some(USB_MANUFACTURER);
@@ -420,7 +415,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(unwrap!(usb_task(usb)));
     spawner.spawn(unwrap!(usb_logger_task(acm_sender)));
-    spawner.spawn(unwrap!(usb_receiver_task(acm_receiver, flash_mutex)));
+    spawner.spawn(unwrap!(usb_receiver_task(acm_receiver)));
     spawner.spawn(unwrap!(webusb_task(webusb_transport)));
     spawner.spawn(unwrap!(persist_keyboard_state_task(flash_mutex)));
     spawner.spawn(unwrap!(heartbeat_task()));
@@ -503,8 +498,8 @@ async fn main(spawner: Spawner) {
                             );
                             crate::ble::KEYBOARD_STATE.lock(|state| {
                                 let mut state = state.borrow_mut();
-                                let active_slot = state.active_slot;
-                                state.bonds[active_slot] = bond.clone();
+                                let active_profile = state.active_profile;
+                                state.bonds[active_profile] = bond.clone();
                                 state.pairing_mode = false;
                             });
                             persist_after_disconnect = true;

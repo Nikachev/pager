@@ -4,30 +4,31 @@
 #![no_main]
 
 mod double_tap;
+mod fat16;
 mod led;
 mod manifest;
+mod memory_map;
 mod msc_flash;
 mod public_key;
-mod raw_uf2;
+mod scsi;
 mod uf2;
 
 use cortex_m_rt::entry;
 use ed25519_dalek::{Signature, VerifyingKey};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::nvmc::Nvmc;
-use msc_flash::{Uf2FlashEngine, FIRMWARE_END, FIRMWARE_START};
+use memory_map::{FIRMWARE_END, FIRMWARE_START, MANIFEST_SIZE};
+use msc_flash::Uf2FlashEngine;
 use nrf_usbd::{UsbPeripheral, Usbd};
-use raw_uf2::RawUf2Class;
 use sha2::{Digest, Sha256};
-use static_cell::StaticCell;
-use uf2::Uf2Block;
+
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
+use usbd_storage::subclass::scsi::Scsi;
 
 pub use led::{BootReason, LedIndicator};
 
 const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
-pub const MANIFEST_SIZE: u32 = 256;
 
 struct Nrf52840Usbd;
 unsafe impl UsbPeripheral for Nrf52840Usbd {
@@ -50,16 +51,40 @@ fn start_hfclk() {
     }
 }
 
+fn init_nrf52840_usb_power() {
+    let power_base = 0x4000_0000 as *mut u32;
+    unsafe {
+        // Wait for USB regulator OUTPUTRDY (USBREGSTATUS & 0x02 != 0)
+        let usbregstatus = power_base.add(0x438 / 4);
+        let mut retries = 0;
+        while (core::ptr::read_volatile(usbregstatus) & 0x02) == 0 {
+            cortex_m::asm::nop();
+            retries += 1;
+            if retries > 100_000 {
+                break;
+            }
+        }
+    }
+}
+
+use cortex_m_rt::exception;
+
+#[exception]
+unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    cortex_m::peripheral::SCB::sys_reset()
+}
+
 #[entry]
 fn main() -> ! {
+    // 1. Check double-tap / DFU reset trigger BEFORE initializing Embassy peripherals
+    let double_tap = double_tap::check_and_set_double_tap();
+
     start_hfclk();
+    init_nrf52840_usb_power();
     let p = embassy_nrf::init(Default::default());
 
     let led_pin = Output::new(p.P0_15, Level::High, OutputDrive::Standard);
     let mut indicator = LedIndicator::new(led_pin);
-
-    // 1. Check double-tap reset trigger
-    let double_tap = double_tap::check_and_set_double_tap();
 
     // 2. Validate existing firmware at FIRMWARE_START
     let valid_fw = validate_existing_firmware();
@@ -78,9 +103,6 @@ fn main() -> ! {
     };
 
     if let Some(reason) = boot_reason {
-        if !double_tap {
-            cortex_m::asm::delay(500 * 64_000);
-        }
         double_tap::clear_double_tap();
 
         // Force hardware USB detach and reset USBD peripheral
@@ -92,55 +114,47 @@ fn main() -> ! {
         }
 
         // Synchronous USBD driver for 100% standalone reliability
-        static mut BUS_ALLOC_STORAGE: core::mem::MaybeUninit<UsbBusAllocator<Usbd<Nrf52840Usbd>>> =
-            core::mem::MaybeUninit::uninit();
-        let bus_alloc: &'static UsbBusAllocator<Usbd<Nrf52840Usbd>> = unsafe {
-            BUS_ALLOC_STORAGE.write(UsbBusAllocator::new(Usbd::new(Nrf52840Usbd)))
-        };
+        static BUS_ALLOC: static_cell::StaticCell<UsbBusAllocator<Usbd<Nrf52840Usbd>>> =
+            static_cell::StaticCell::new();
+        static SCSI_BUF: static_cell::StaticCell<[u8; 18432]> = static_cell::StaticCell::new();
 
-        let mut uf2_class = RawUf2Class::new(bus_alloc);
+        let bus_alloc = BUS_ALLOC.init(UsbBusAllocator::new(Usbd::new(Nrf52840Usbd)));
+        let scsi_buf = SCSI_BUF.init([0u8; 18432]);
+        let scsi_buf_ref: &'static mut [u8] = scsi_buf.as_mut_slice();
 
-        let mut usb_dev = UsbDeviceBuilder::new(bus_alloc, UsbVidPid(0x1209, 0x0001))
+        let mut msc_class = Scsi::new(bus_alloc, 64, 0, scsi_buf_ref).unwrap();
+
+        let mut usb_dev = UsbDeviceBuilder::new(bus_alloc, UsbVidPid(0x239A, 0x0029))
             .strings(&[StringDescriptors::default()
                 .manufacturer("Nikachev")
-                .product("Pager Bootloader")
+                .product("Pager Boot Drive")
                 .serial_number("12345678")])
             .unwrap()
-            .device_class(0xFF)
+            .device_class(0x00)
             .max_packet_size_0(64)
             .unwrap()
             .build();
 
+        // Re-enable USBD peripheral hardware and D+ pullup resistor (USBPULLUP = 1)
+        unsafe {
+            let usbd_base = 0x4002_7000 as *mut u32;
+            core::ptr::write_volatile(usbd_base.add(0x500 / 4), 1); // ENABLE = 1
+            core::ptr::write_volatile(usbd_base.add(0x504 / 4), 1); // USBPULLUP = 1
+        }
+
         let nvmc = Nvmc::new(p.NVMC);
         let mut flash_engine = Uf2FlashEngine::new(nvmc);
-
-        let mut block_buf = [0u8; 512];
-        let mut block_off = 0;
 
         let mut loop_counter: u32 = 0;
         let mut tick_ms: u32 = 0;
 
         loop {
-            if usb_dev.poll(&mut [&mut uf2_class]) {
-                let mut chunk = [0u8; 64];
-                if let Ok(len) = uf2_class.read_packet(&mut chunk) {
-                    if len > 0 {
-                        let avail = (512 - block_off).min(len);
-                        block_buf[block_off..block_off + avail].copy_from_slice(&chunk[..avail]);
-                        block_off += avail;
+            // Poll USB at full hardware speed for zero-latency Bulk transfers
+            let _ = usb_dev.poll(&mut [&mut msc_class]);
+            let _ = msc_class.poll(|cmd| {
+                flash_engine.handle_scsi_command(cmd);
+            });
 
-                        if block_off == 512 {
-                            if let Some(uf2) = Uf2Block::parse(&block_buf) {
-                                let _ = flash_engine.handle_uf2_block(uf2);
-                                let _ = uf2_class.write_packet(&[0x00]); // ACK
-                            }
-                            block_off = 0;
-                        }
-                    }
-                }
-            }
-
-            cortex_m::asm::delay(64);
             loop_counter = loop_counter.wrapping_add(1);
 
             // Feed watchdog if active from main application
@@ -148,9 +162,17 @@ fn main() -> ! {
                 core::ptr::write_volatile(0x4001_0600 as *mut u32, 0x6E52_4635);
             }
 
-            if loop_counter % 1000 == 0 {
+            if (loop_counter & 0x1FFF) == 0 {
                 tick_ms = tick_ms.wrapping_add(1);
                 indicator.tick_nonblocking(tick_ms, reason);
+
+                // DFU Auto-Timeout: If idle for 5 minutes (300,000 ms), boot existing firmware if valid
+                if tick_ms >= 300_000 {
+                    let fw = validate_existing_firmware();
+                    if fw.valid_vector && fw.valid_sig && fw.valid_hash {
+                        cortex_m::peripheral::SCB::sys_reset();
+                    }
+                }
             }
         }
     } else {
@@ -226,9 +248,21 @@ fn valid_vector_table(image: &[u8], image_start: u32) -> bool {
 
 fn jump(image_start: u32) -> ! {
     unsafe {
+        cortex_m::interrupt::disable();
+
+        // Disable all NVIC interrupts and clear any pending — clean slate for firmware
+        for i in 0u32..8 {
+            core::ptr::write_volatile((0xE000_E180u32 + i * 4) as *mut u32, 0xFFFF_FFFF); // ICER
+            core::ptr::write_volatile((0xE000_E280u32 + i * 4) as *mut u32, 0xFFFF_FFFF);
+            // ICPR
+        }
+
         core::ptr::write_volatile(SCB_VTOR, image_start);
         cortex_m::asm::dsb();
         cortex_m::asm::isb();
+
+        // Restore PRIMASK=0 to match hardware-reset state before jumping
+        cortex_m::interrupt::enable();
         cortex_m::asm::bootload(image_start as *const u32)
     }
 }

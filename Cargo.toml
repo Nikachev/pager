@@ -35,12 +35,14 @@ trouble-host = { git = "https://github.com/embassy-rs/trouble", rev = "c21b1239f
 
 [profile.release]
 codegen-units = 1
-debug = 2
+debug = 0
 debug-assertions = false
 incremental = false
 lto = "fat"
 opt-level = "z"
 overflow-checks = false
+panic = "abort"
+strip = "symbols"
 
 [profile.release.package.sha2]
 opt-level = 3

@@ -20,13 +20,19 @@ XTASK       ?= cargo run --target $(HOST_TARGET) --package xtask --
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build check clippy fmt verify bootloader test test-dfu test-flash test-all flash flash-uf2 flash-swd clean clean-dist clean-all help
+.PHONY: all build check clippy fmt verify bootloader test test-dfu test-flash test-all flash flash-uf2 flash-swd flash-bootloader monitor info clean clean-dist clean-all help
 
 all: verify build
 
 ## 🔨 Build & Quality Targets
 build:
 	@$(XTASK) build
+
+info:
+	@$(XTASK) info
+
+monitor:
+	@$(PYTHON) tools/monitor_logs.py
 
 check:
 	@echo "Checking codebase compilation..."
@@ -94,6 +100,13 @@ flash-swd: bootloader build
 	@echo "=================================================="
 	$(PROBE_RS) download --chip nRF52840_xxAA $(BOOTLOADER_ELF)
 	$(PROBE_RS) download --chip nRF52840_xxAA --binary-format bin --base-address 0x0000C000 $(BIN)
+	$(PROBE_RS) reset --chip nRF52840_xxAA
+
+flash-bootloader: bootloader
+	@echo "=================================================="
+	@echo "     Flashing Bootloader via SWD (probe-rs)       "
+	@echo "=================================================="
+	$(PROBE_RS) download --chip nRF52840_xxAA $(BOOTLOADER_ELF)
 	$(PROBE_RS) reset --chip nRF52840_xxAA
 
 ## 🧹 Cleanup & Helpers

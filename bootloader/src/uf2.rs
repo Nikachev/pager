@@ -12,7 +12,7 @@ pub const UF2_MAGIC_END: u32 = 0x0AB16F30;
 pub const UF2_FLAG_FAMILY_ID_PRESENT: u32 = 0x00002000;
 pub const NRF52840_FAMILY_ID: u32 = 0xADA52840;
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Uf2Block {
     pub magic_start0: u32,
@@ -28,16 +28,16 @@ pub struct Uf2Block {
 }
 
 impl Uf2Block {
-    pub fn parse(buf: &[u8; 512]) -> Option<&Self> {
-        let block = unsafe { &*(buf.as_ptr() as *const Uf2Block) };
+    pub fn parse(buf: &[u8; 512]) -> Option<Self> {
+        let block: Uf2Block = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Uf2Block) };
         if block.magic_start0 == UF2_MAGIC_START0
             && block.magic_start1 == UF2_MAGIC_START1
             && block.magic_end == UF2_MAGIC_END
         {
-            if (block.flags & UF2_FLAG_FAMILY_ID_PRESENT) != 0 {
-                if block.family_id != NRF52840_FAMILY_ID {
-                    return None;
-                }
+            if (block.flags & UF2_FLAG_FAMILY_ID_PRESENT) != 0
+                && block.family_id != NRF52840_FAMILY_ID
+            {
+                return None;
             }
             if block.payload_size as usize <= block.data.len() {
                 return Some(block);

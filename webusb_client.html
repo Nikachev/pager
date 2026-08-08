@@ -52,6 +52,7 @@ pre{height:220px;overflow:auto;margin:0;border-radius:8px;background:#17211b;col
     <div class="row" style="margin-bottom:12px">
       <button id="pair" disabled>Pair New Host</button>
       <button id="disconnect" disabled>Disconnect BLE</button>
+      <button id="get_logs" disabled>Get Device Logs</button>
       <button id="clear" class="warn" disabled>Forget Active Profile</button>
     </div>
     <div class="row">
@@ -94,19 +95,19 @@ function setStatus(text,connected=false){
 }
 
 function crc32(b){let c=~0;for(let i=0;i<b.length;i++){c^=b[i];for(let j=0;j<8;j++)c=(c>>>1)^(c&1?0xEDB88320:0)}return(~c)>>>0}
-function frame(kind,req,p=[]){if(p.length>512)throw Error('Protocol payload too large');let a=new Uint8Array(H+p.length);a.set([80,71,82,49]);a[4]=1;a[5]=kind;let v=new DataView(a.buffer);v.setUint32(6,req,true);v.setUint16(10,p.length,true);v.setUint32(12,crc32(p),true);a.set(p,H);return a}
+function frame(kind,req,p=[]){if(p.length>512)throw Error('Protocol payload too large');let a=new Uint8Array(16+p.length);let v=new DataView(a.buffer);v.setUint32(0,PGR1,true);v.setUint8(4,1);v.setUint8(5,kind);v.setUint32(6,req,true);v.setUint16(10,p.length,true);v.setUint32(12,crc32(p),true);a.set(p,16);return a}
 
 async function recv(){
-  while(rx.length<H){let r=await d.transferIn(inEp,64);if(r.status!=='ok')throw Error('USB read failed');rx.push(...new Uint8Array(r.data.buffer))}
-  let n=rx[10]|rx[11]<<8;
-  while(rx.length<H+n){let r=await d.transferIn(inEp,64);if(r.status!=='ok')throw Error('USB read failed');rx.push(...new Uint8Array(r.data.buffer))}
-  let a=rx.splice(0,H+n),v=new DataView(Uint8Array.from(a).buffer);
-  if(crc32(a.slice(H,H+n))!==v.getUint32(12,true))throw Error('Bad response CRC');
-  return {kind:a[5],id:v.getUint32(6,true),payload:Uint8Array.from(a.slice(H,H+n))}
+  let r=await d.transferIn(inEp,64);if(r.status!=='ok'||r.data.byteLength<16)throw Error('Short WebUSB frame');
+  let v=r.data,kind=v.getUint8(5),req=v.getUint32(6,true),len=v.getUint16(10,true),crc=v.getUint32(12,true);
+  if(v.getUint32(0,true)!==PGR1||v.getUint8(4)!==1)throw Error('Bad protocol magic/version');
+  let p=new Uint8Array(r.data.buffer,r.data.byteOffset+16,len);
+  if(crc32(p)!==crc)throw Error('Bad response CRC');
+  return {kind,id:req,payload:p}
 }
 
 async function call(kind,p){
-  let req=id++;
+  let req=reqId++;
   for(let retry=0;retry<200;retry++){
     let r=await d.transferOut(outEp,frame(kind,req,p));
     if(r.status!=='ok')throw Error('USB write failed');
@@ -114,7 +115,7 @@ async function call(kind,p){
     for(let i=0;i<8;i++){
       let answer=await recv();
       if(answer.id!==req){log(`Ignoring stale WebUSB response ${answer.id}; expected ${req}`,'warnlog');continue}
-      if(answer.kind===5){if(kind===4&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
+      if(answer.kind===5){if(kind===CMD_SWITCH_PROFILE&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
       return answer.payload
     }
     if(!busy)throw Error('No matching device response');
@@ -123,10 +124,10 @@ async function call(kind,p){
   throw Error('Device remained busy')
 }
 
-function enabled(v){['refresh','pair','disconnect','clear','type','reboot_bootloader'].forEach(x=>$(x).disabled=!v)}
+function enabled(v){['refresh','pair','disconnect','clear','type','reboot_bootloader','get_logs'].forEach(x=>$(x).disabled=!v)}
 
 async function state(){
-  let s=await call(1,[3]);
+  let s=await call(CMD_PING,[CMD_GET_KEYBOARD_STATE]);
   active=s[0];
   $('profiles').style.display='block';
   $('profiles').textContent=`Active profile ${active+1}; pairing ${s[1]?'enabled':'disabled'}; bonds:${s.slice(2).map((v,i)=>` ${i+1}:${v?'yes':'empty'}`).join('')}`;
@@ -162,10 +163,21 @@ $('connect').onclick=async()=>{
 
 $('refresh').onclick=()=>state().catch(e=>log(e.message,'errlog'));
 
+$('get_logs').onclick=async()=>{
+  try{
+    log('Fetching diagnostic logs from device...');
+    let res=await call(1,[10]);
+    let text=new TextDecoder().decode(res);
+    log(`=== Device Logs ===\n${text}`,'ok');
+  }catch(e){
+    log(`Get logs failed: ${e.message||e}`,'errlog');
+  }
+};
+
 $('reboot_bootloader').onclick=async()=>{
   try{
     log('Sending command to reboot device into Bootloader DFU mode...');
-    await call(1,[9]);
+    await call(CMD_PING,[CMD_REBOOT_BOOTLOADER]);
     setStatus('disconnected',false);
     enabled(false);
     log('Reboot command sent! Board is entering Pager Bootloader DFU mode.','ok');
@@ -176,7 +188,7 @@ $('reboot_bootloader').onclick=async()=>{
 
 $('pair').onclick=async()=>{
   try{
-    await call(1,[5]);
+    await call(CMD_PING,[CMD_ENABLE_PAIRING]);
     log('Pairing mode enabled for active profile.','ok');
     await state()
   }catch(e){
@@ -186,7 +198,7 @@ $('pair').onclick=async()=>{
 
 $('disconnect').onclick=async()=>{
   try{
-    await call(1,[6]);
+    await call(CMD_PING,[CMD_DISCONNECT]);
     log('BLE disconnect command sent.','ok')
   }catch(e){
     log(`Disconnect failed: ${e.message||e}`,'errlog')

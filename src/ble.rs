@@ -97,14 +97,14 @@ pub struct DeviceInformationService {
 
 pub struct KeyboardState {
     pub bonds: [Option<BondInformation>; 3],
-    pub active_slot: usize,
+    pub active_profile: usize,
     pub pairing_mode: bool,
 }
 
 pub static KEYBOARD_STATE: SyncMutex<ThreadModeRawMutex, RefCell<KeyboardState>> =
     SyncMutex::new(RefCell::new(KeyboardState {
         bonds: [None, None, None],
-        active_slot: 0,
+        active_profile: 0,
         pairing_mode: false,
     }));
 

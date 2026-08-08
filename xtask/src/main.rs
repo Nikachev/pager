@@ -25,17 +25,101 @@ struct ManifestHeader {
     signature: [u8; 64],
 }
 
+impl ManifestHeader {
+    fn to_bytes(&self) -> [u8; 120] {
+        let mut buf = [0u8; 120];
+        buf[0..4].copy_from_slice(&self.state.to_le_bytes());
+        buf[4..12].copy_from_slice(&self.magic);
+        buf[12..16].copy_from_slice(&self.version.to_le_bytes());
+        buf[16..20].copy_from_slice(&self.image_len.to_le_bytes());
+        buf[20..24].copy_from_slice(&self.target_slot.to_le_bytes());
+        buf[24..56].copy_from_slice(&self.digest);
+        buf[56..120].copy_from_slice(&self.signature);
+        buf
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let task = args.get(1).map(|s| s.as_str()).unwrap_or("build");
 
     match task {
         "build" => build_firmware(),
+        "info" => print_memory_info(),
         _ => {
             eprintln!("Unknown xtask: {task}");
             std::process::exit(1);
         }
     }
+}
+
+fn print_memory_info() {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let signed_bin_path = repo_root.join("dist/pager-signed.bin");
+
+    println!("==================================================");
+    println!("     Pager Memory Partitioning & Utilization     ");
+    println!("==================================================");
+
+    const APP_LIMIT: usize = 925440; // 903.75 KiB
+    const BOOT_LIMIT: usize = 49152; // 48 KiB
+
+    if signed_bin_path.exists() {
+        let size = fs::metadata(&signed_bin_path)
+            .map(|m| m.len() as usize)
+            .unwrap_or(0);
+        let pct = (size as f64 / APP_LIMIT as f64) * 100.0;
+        let bar_filled = ((pct / 5.0) as usize).min(20);
+        let bar = "█".repeat(bar_filled) + &"░".repeat(20 - bar_filled);
+        println!("📦 Application Partition (0x0C000..0xFE000):");
+        println!("   Size: {} / {} bytes ({:.1}%)", size, APP_LIMIT, pct);
+        println!("   [{}]", bar);
+    } else {
+        println!(
+            "📦 Application Partition: dist/pager-signed.bin not built yet (run 'make build')"
+        );
+    }
+
+    let raw_boot_path = repo_root.join("dist/pager-bootloader.bin");
+    let target_boot_path =
+        repo_root.join("bootloader/target/thumbv7em-none-eabihf/release/pager-bootloader");
+    let boot_path = if raw_boot_path.exists() {
+        raw_boot_path
+    } else {
+        target_boot_path
+    };
+
+    if boot_path.exists() {
+        let raw_size = fs::read(&boot_path)
+            .map(|b| {
+                if b.starts_with(b"\x7fELF") {
+                    // Approximate binary payload size for ELF
+                    (b.len() / 7).min(BOOT_LIMIT)
+                } else {
+                    b.len()
+                }
+            })
+            .unwrap_or(0);
+        let pct = (raw_size as f64 / BOOT_LIMIT as f64) * 100.0;
+        let bar_filled = ((pct / 5.0) as usize).min(20);
+        let bar = "█".repeat(bar_filled) + &"░".repeat(20 - bar_filled);
+        println!("\n⚡ Bootloader Partition (0x00000..0x0C000):");
+        println!(
+            "   Size: ~{} / {} bytes ({:.1}%)",
+            raw_size, BOOT_LIMIT, pct
+        );
+        println!("   [{}]", bar);
+    } else {
+        println!("\n⚡ Bootloader Partition: bootloader release binary not built yet (run 'make bootloader')");
+    }
+
+    println!(
+        "\n💾 Storage Partition (0xFE000..0x100000): 8192 bytes (Persistent BLE Bonds & Settings)"
+    );
+    println!("==================================================");
 }
 
 fn build_firmware() {
@@ -108,7 +192,10 @@ fn build_firmware() {
     // 2. Load signing key from PEM file or fallback to Dev Key
     let signing_key = load_or_create_signing_key(&repo_root);
     let verifying_key = signing_key.verifying_key();
-    println!("🔑 Signing Firmware Public Key: {:?}", verifying_key.to_bytes());
+    println!(
+        "🔑 Signing Firmware Public Key: {:?}",
+        verifying_key.to_bytes()
+    );
 
     // Construct signed message: Magic + Version + image_len + target_slot + digest
     let mut signed_msg = Vec::new();
@@ -130,16 +217,10 @@ fn build_firmware() {
         signature: signature.to_bytes(),
     };
 
-    // Combine Manifest (112 bytes) + Raw Binary
-    let manifest_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &manifest as *const ManifestHeader as *const u8,
-            core::mem::size_of::<ManifestHeader>(),
-        )
-    };
+    let manifest_bytes = manifest.to_bytes();
 
     let mut full_image = Vec::new();
-    full_image.extend_from_slice(manifest_bytes);
+    full_image.extend_from_slice(&manifest_bytes);
     full_image.resize(256, 0);
     full_image.extend_from_slice(&raw_bin);
 
@@ -171,8 +252,23 @@ fn build_firmware() {
     fs::write(&signed_bin_path, &full_image).expect("Failed to write pager-signed.bin");
     fs::write(&uf2_path, &uf2_data).expect("Failed to write .uf2 file");
 
+    const MAX_FIRMWARE_SIZE: usize = 925440; // 903.75 KiB
+    if full_image.len() > MAX_FIRMWARE_SIZE {
+        eprintln!(
+            "❌ ERROR: Signed firmware size ({} bytes) exceeds maximum partition slot size ({} bytes)!",
+            full_image.len(),
+            MAX_FIRMWARE_SIZE
+        );
+        std::process::exit(1);
+    }
+
     println!("==================================================");
-    println!("🎉 UF2 Firmware Build Success! Output:");
+    println!("🎉 UF2 Firmware Build Success!");
+    println!(
+        "📦 Signed Payload Size: {} bytes (limit: {} bytes)",
+        full_image.len(),
+        MAX_FIRMWARE_SIZE
+    );
     println!("==================================================");
 }
 
@@ -193,16 +289,25 @@ fn load_or_create_signing_key(repo_root: &std::path::Path) -> SigningKey {
     if let Some(path) = key_path {
         if let Ok(pem_content) = fs::read_to_string(&path) {
             if let Ok(key) = SigningKey::from_pkcs8_pem(&pem_content) {
-                println!("🔑 Signed firmware using PEM Private Key from: {}", path.display());
+                println!(
+                    "🔑 Signed firmware using PEM Private Key from: {}",
+                    path.display()
+                );
                 return key;
             } else if let Ok(key_bytes) = fs::read(&path) {
                 if key_bytes.len() == 32 {
                     let key = SigningKey::from_bytes(&key_bytes.try_into().unwrap());
-                    println!("🔑 Signed firmware using raw 32-byte Private Key from: {}", path.display());
+                    println!(
+                        "🔑 Signed firmware using raw 32-byte Private Key from: {}",
+                        path.display()
+                    );
                     return key;
                 }
             }
-            eprintln!("⚠️ Failed to parse PEM key at {}; falling back to Dev Key", path.display());
+            eprintln!(
+                "⚠️ Failed to parse PEM key at {}; falling back to Dev Key",
+                path.display()
+            );
         }
     }
 

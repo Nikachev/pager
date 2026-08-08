@@ -97,12 +97,12 @@ async def find_ble_device(name_prefix="Pager", timeout=8.0):
     service_uuid_lower = SERVICE_UUID.lower()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        res = await BleakScanner.discover(timeout=3.0, return_adv=True)
+        res = await BleakScanner.discover(timeout=1.5, return_adv=True, service_uuids=[SERVICE_UUID])
         for d, adv in res.values():
             name = d.name or adv.local_name
             if name and name.startswith(name_prefix):
                 return d
             if adv.service_uuids and any(u.lower() == service_uuid_lower for u in adv.service_uuids):
                 return d
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
     return None

@@ -19,7 +19,7 @@ embassy-time = { version = "0.5.1" }
 embedded-storage = "0.3.1"
 usb-device = "0.3.2"
 nrf-usbd = "0.3.0"
-usbd-storage = { version = "0.2.0", features = ["bbb", "scsi"] }
+usbd-storage = { path = "usbd-storage", features = ["bbb", "scsi"] }
 static_cell = "2.1.0"
 
 [profile.release]

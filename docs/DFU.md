@@ -1,6 +1,6 @@
 # Single-Slot Secure UF2 Bootloader Architecture (nRF52840)
 
-This document provides a comprehensive technical reference for the **Pager Single-Slot Secure UF2 Bootloader**, memory layout, cryptographic signature verification, Double-Tap reset mechanism, and direct USB Bulk DFU flashing protocol.
+This document provides a comprehensive technical reference for the **Pager Single-Slot Secure UF2 Bootloader**, memory layout, cryptographic signature verification, Double-Tap reset mechanism, and USB Mass Storage (MSC / SCSI Bulk-Only Transport) DFU flashing protocol.
 
 ---
 
@@ -57,27 +57,27 @@ pub struct ManifestHeader {
 ## 🔘 3. Double-Tap Reset Mechanism
 
 To allow manual user entry into DFU mode without a software command:
-- The bootloader writes a magic flag to uninitialized RAM (`0x2003_FFFC`) on pin reset.
+- The bootloader and application write a magic flag (`0xA5`) to the retained power register `NRF_POWER_GPREGRET` (`0x4000_051C`) on pin reset or software DFU command.
 - If a second pin reset occurs within **500 ms**, the double-tap flag is confirmed.
 - A fast **15 ms** debounce filter prevents false triggers from mechanical pin noise.
 - When double-tap is detected, the bootloader stays in DFU mode and blinks `[3 short blinks]` (User Request).
 
 ---
 
-## ⚡ 4. Direct USB Bulk UF2 DFU Protocol
+## ⚡ 4. USB Mass Storage (MSC) UF2 DFU Protocol
 
-The bootloader exposes a Vendor-Specific USB Bulk Interface (`bDeviceClass = 0xFF`, `bInterfaceClass = 0xFF`) on Endpoint `0x01` (OUT) and Endpoint `0x81` (IN).
+The bootloader exposes a standard **USB Mass Storage Class Interface** (`bInterfaceClass = 0x08`, SCSI Transparent Command Set `0x06`, Bulk-Only Transport `0x50`) on Endpoint `0x01` (OUT) and Endpoint `0x81` (IN).
 
 ### Flashing Sequence
-1. Host script (`tools/flash_uf2.py` or `make flash`) sends 512-byte UF2 blocks directly to Endpoint `0x01`.
+1. Host script (`tools/flash_uf2.py` or `make flash`) sends SCSI `WRITE (10)` command wrappers (CBW) containing 512-byte UF2 blocks to the USB Mass Storage interface.
 2. **Block 0 (Manifest Header)**:
-   - Received in RAM.
+   - Received in RAM via SCSI WRITE command.
    - Ed25519 signature is verified against trusted public keys in RAM.
    - Page 0 of application Flash (`0x0000_C000`) is erased and Block 0 payload written.
-   - Bootloader responds with `0x00` ACK packet on Endpoint `0x81`.
+   - Bootloader responds with SCSI CSW Command Status Passed (0x00).
 3. **Blocks 1..N (Payload)**:
-   - Received in 512-byte chunks, written to Flash sequentially.
-   - Bootloader responds with `0x00` ACK packet for each block.
+   - Received in 512-byte SCSI blocks, written to Flash sequentially.
+   - Bootloader responds with CSW Passed for each block.
 4. **Final Block**:
    - SHA-256 digest of all flashed application blocks is verified.
    - Bootloader issues `SCB::sys_reset()`.
@@ -91,7 +91,7 @@ The bootloader exposes a Vendor-Specific USB Bulk Interface (`bDeviceClass = 0xF
 # Build bootloader & signed firmware UF2
 make build
 
-# Flash firmware over USB
+# Flash firmware over USB Mass Storage
 python3 tools/flash_uf2.py --file dist/pager.uf2
 
 # Flash via SWD Probe (probe-rs)
@@ -114,6 +114,6 @@ cargo clippy --target thumbv7em-none-eabihf -- -D warnings
 # Build release bootloader & signed main firmware UF2
 make build
 
-# Run automated software DFU reboot & USB enumeration test on hardware
+# Run automated software DFU reboot & USB Mass Storage enumeration test on hardware
 python3 tools/test_dfu_reboot.py
 ```

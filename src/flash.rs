@@ -7,13 +7,13 @@ use trouble_host::prelude::{
 
 pub use pager::protocol::{crc32_finalize, crc32_update, CRC32_INIT};
 
-/// Triggers a software reboot into DFU mode by writing the Double-Tap magic flag
-/// to uninitialized RAM (0x4000_051C = NRF_POWER_GPREGRET) and issuing an ARM system reset.
+/// Triggers a software reboot into DFU mode by writing the DFU magic flag
+/// to GPREGRET (8-bit retention register at 0x4000_051C) and issuing an ARM system reset.
 pub fn enter_bootloader() -> ! {
-    const DBL_TAP_MAGIC: u8 = 0xA5;
-    const NRF_POWER_GPREGRET: *mut u8 = 0x4000_051C as *mut u8;
+    const DFU_MAGIC: u32 = 0xB1; // 8-bit magic matching bootloader's DFU_MAGIC
+    const NRF_POWER_GPREGRET: *mut u32 = 0x4000_051C as *mut u32;
     unsafe {
-        core::ptr::write_volatile(NRF_POWER_GPREGRET, DBL_TAP_MAGIC);
+        core::ptr::write_volatile(NRF_POWER_GPREGRET, DFU_MAGIC);
     }
     cortex_m::asm::dsb();
     cortex_m::peripheral::SCB::sys_reset();
@@ -69,7 +69,13 @@ pub async fn load_persistent_state<F: NorFlash>(
                 // Check legacy format at page start
                 let magic = u32::from_le_bytes(buf[0..4].try_into().unwrap_or([0; 4]));
                 if magic == LEGACY_STORAGE_MAGIC && best_record.is_none() {
-                    best_record = Some((0, ((buf[4] as usize).min(BOND_SLOT_COUNT - 1), [None, None, None])));
+                    best_record = Some((
+                        0,
+                        (
+                            (buf[4] as usize).min(BOND_SLOT_COUNT - 1),
+                            [None, None, None],
+                        ),
+                    ));
                 }
             }
         }
@@ -82,7 +88,7 @@ pub async fn load_persistent_state<F: NorFlash>(
 /// Erases a 4 KB page ONLY when the current active page is completely filled (1:26 wear reduction).
 pub async fn save_persistent_state<F: NorFlash>(
     flash: &mut F,
-    active_slot: usize,
+    active_profile: usize,
     bonds: &[Option<BondInformation>; BOND_SLOT_COUNT],
 ) -> Result<(), F::Error> {
     // 1. Scan current Flash state to find highest sequence number and last used slot
@@ -108,14 +114,22 @@ pub async fn save_persistent_state<F: NorFlash>(
         }
     }
 
-    let new_seq = if found_any { max_seq.wrapping_add(1) } else { 1 };
+    let new_seq = if found_any {
+        max_seq.wrapping_add(1)
+    } else {
+        1
+    };
 
     // 2. Determine target write page & slot
     let (target_page, target_slot) = match (found_any, max_slot) {
         (true, Some(slot)) if slot + 1 < SLOTS_PER_PAGE => (max_page, slot + 1),
         (true, _) => {
             // Active page is full: switch to opposite page
-            let next_page = if max_page == STORAGE_PAGE0 { STORAGE_PAGE1 } else { STORAGE_PAGE0 };
+            let next_page = if max_page == STORAGE_PAGE0 {
+                STORAGE_PAGE1
+            } else {
+                STORAGE_PAGE0
+            };
             (next_page, 0)
         }
         _ => (STORAGE_PAGE0, 0),
@@ -123,7 +137,9 @@ pub async fn save_persistent_state<F: NorFlash>(
 
     // If starting a new page (slot 0), erase target page first
     if target_slot == 0 {
-        flash.erase(target_page, target_page + STORAGE_PAGE_SIZE).await?;
+        flash
+            .erase(target_page, target_page + STORAGE_PAGE_SIZE)
+            .await?;
     }
 
     // 3. Build and write the 152-byte record
@@ -132,7 +148,7 @@ pub async fn save_persistent_state<F: NorFlash>(
 
     buf[0..4].copy_from_slice(&STORAGE_MAGIC.to_le_bytes());
     buf[4] = STORAGE_VERSION;
-    buf[5] = active_slot.min(BOND_SLOT_COUNT - 1) as u8;
+    buf[5] = active_profile.min(BOND_SLOT_COUNT - 1) as u8;
     buf[8..12].copy_from_slice(&new_seq.to_le_bytes());
 
     for (i, bond) in bonds.iter().enumerate() {
@@ -164,7 +180,7 @@ fn decode_storage(buf: &[u8]) -> Option<StorageRecord> {
     if crc32_finalize(crc32_update(CRC32_INIT, &buf[..STORAGE_DATA_LEN - 4])) != stored_crc {
         return None;
     }
-    let active_slot = (buf[5] as usize).min(BOND_SLOT_COUNT - 1);
+    let active_profile = (buf[5] as usize).min(BOND_SLOT_COUNT - 1);
     let mut bonds = [None, None, None];
     for (index, bond) in bonds.iter_mut().enumerate() {
         let start = STORAGE_HEADER_LEN + index * BOND_RECORD_LEN;
@@ -172,7 +188,7 @@ fn decode_storage(buf: &[u8]) -> Option<StorageRecord> {
     }
     Some((
         u32::from_le_bytes(buf[8..12].try_into().ok()?),
-        (active_slot, bonds),
+        (active_profile, bonds),
     ))
 }
 
@@ -185,21 +201,17 @@ fn decode_storage_v2(buf: &[u8]) -> Option<StorageRecord> {
     {
         return None;
     }
-    let stored_crc = u32::from_le_bytes(
-        buf[V2_DATA_LEN - 4..V2_DATA_LEN]
-            .try_into()
-            .ok()?,
-    );
+    let stored_crc = u32::from_le_bytes(buf[V2_DATA_LEN - 4..V2_DATA_LEN].try_into().ok()?);
     if crc32_finalize(crc32_update(CRC32_INIT, &buf[..V2_DATA_LEN - 4])) != stored_crc {
         return None;
     }
-    let active_slot = (buf[5] as usize).min(BOND_SLOT_COUNT - 1);
+    let active_profile = (buf[5] as usize).min(BOND_SLOT_COUNT - 1);
     let mut bonds = [None, None, None];
     for (index, bond) in bonds.iter_mut().enumerate() {
         let start = V2_HEADER_LEN + index * BOND_RECORD_LEN;
         *bond = decode_bond(&buf[start..start + BOND_RECORD_LEN]);
     }
-    Some((0, (active_slot, bonds)))
+    Some((0, (active_profile, bonds)))
 }
 
 fn select_storage(
@@ -264,4 +276,39 @@ fn decode_bond(data: &[u8]) -> Option<BondInformation> {
         is_bonded: data[42] != 0,
         security_level,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_storage_crc_and_decode_roundtrip() {
+        let mut buf = [0xFFu8; RECORD_SLOT_LEN];
+        buf[0..4].copy_from_slice(&STORAGE_MAGIC.to_le_bytes());
+        buf[4] = STORAGE_VERSION;
+        buf[5] = 1; // active_slot
+        buf[8..12].copy_from_slice(&105u32.to_le_bytes()); // seq
+
+        let crc = crc32_finalize(crc32_update(CRC32_INIT, &buf[..STORAGE_DATA_LEN - 4]));
+        buf[STORAGE_DATA_LEN - 4..STORAGE_DATA_LEN].copy_from_slice(&crc.to_le_bytes());
+
+        let decoded = decode_storage(&buf);
+        assert!(decoded.is_some());
+        let (seq, (slot, bonds)) = decoded.unwrap();
+        assert_eq!(seq, 105);
+        assert_eq!(slot, 1);
+        assert_eq!(bonds, [None, None, None]);
+    }
+
+    #[test]
+    fn test_select_storage_sequence_wrap() {
+        let rec1 = Some((100u32, (0, [None, None, None])));
+        let rec2 = Some((101u32, (1, [None, None, None])));
+        assert_eq!(select_storage(rec1, rec2).unwrap().0, 101);
+
+        let rec_wrapped = Some((1u32, (0, [None, None, None])));
+        let rec_old = Some((0xFFFF_FFFFu32, (1, [None, None, None])));
+        assert_eq!(select_storage(rec_old, rec_wrapped).unwrap().0, 1);
+    }
 }

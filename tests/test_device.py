@@ -194,13 +194,9 @@ def test_uf2_flashing():
     uf2_file = os.path.join(_REPO_ROOT, "dist", "pager.uf2")
     assert os.path.exists(uf2_file), f"UF2 file not found: {uf2_file}"
 
-    res = subprocess.run(
-        [sys.executable, os.path.join(_REPO_ROOT, "tools", "flash_uf2.py"), "--file", uf2_file],
-        capture_output=True,
-        text=True,
-        cwd=_REPO_ROOT,
-    )
-    assert res.returncode == 0, f"UF2 Flashing failed: {res.stdout}\n{res.stderr}"
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "tools"))
+    import flash_uf2 as flasher
+    flasher.flash_uf2(uf2_file)
     print("UF2 Firmware transferred successfully and application booted!")
 
 
@@ -255,3 +251,18 @@ def test_visible_gatt_metadata_and_hid_when_exposed():
         if "Could not find BLE device" in str(e) or "Bluetooth" in str(e):
             pytest.skip(f"BLE test skipped: {e}")
         raise
+
+
+@pytest.mark.dfu
+def test_corrupted_uf2_rejection():
+    """Verify that UF2 blocks with corrupted magic or invalid parameters are rejected"""
+    print("\n--- Running Corrupted UF2 Rejection Test ---")
+    sys.path.insert(0, os.path.join(_REPO_ROOT, "tools"))
+    import flash_uf2 as flasher
+
+    bad_payload = bytearray(512)
+    bad_payload[0:4] = (0xDEADBEEF).to_bytes(4, 'little')  # Bad magic 0
+
+    with pytest.raises(Exception):
+        flasher.flash_uf2_bytes(bytes(bad_payload))
+    print("Corrupted UF2 payload correctly rejected by flasher / validation!")

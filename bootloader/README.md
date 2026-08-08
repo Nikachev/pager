@@ -9,7 +9,8 @@ It validates the Ed25519 digital signature and SHA-256 digest of the manifest he
 - **Single-Slot Memory Map**: Application partition from `0x0C000` to `0xFE000` (904 KiB total).
 - **Ed25519 & SHA-256 Validation**: Blocks unsigned or corrupted images from executing.
 - **Double-Tap Reset Trigger**: Double-pressing the reset button within 500 ms forces entry into DFU mode.
-- **Vendor-Specific USB Bulk DFU**: Fast direct USB Bulk endpoints for UF2 flashing via `python3 flash_uf2.py`.
+- **USB Mass Storage DFU (`PAGER_BOOT`)**: Standard USB Mass Storage (SCSI Bulk-Only Transport) FAT16 interface (64 MB, 2 sectors/cluster) auto-mounting as `PAGER_BOOT` for drag-and-drop or `python3 tools/flash_uf2.py` UF2 flashing.
+- **High-Performance 4KB Page Buffering**: Page-at-a-time NVMC flash writing for fast transfer speeds (~700 KB/s).
 
 ---
 

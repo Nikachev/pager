@@ -1,6 +1,6 @@
 pub const MAGIC: [u8; 8] = *b"PGRFW001";
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Manifest {
     pub state: u32,

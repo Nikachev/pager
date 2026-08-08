@@ -1,16 +1,13 @@
 //! CDC-ACM USB Serial logger and command reception task.
 
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Timer};
 use embassy_usb::class::cdc_acm::{Receiver, Sender};
 use embedded_io_async::Write;
-use nrf_mpsl::Flash;
 
-use crate::{ble, MyDriver, LOG_CHANNEL};
+use crate::{ble, NrfUsbDriver, LOG_CHANNEL};
 
 #[embassy_executor::task]
-pub async fn usb_logger_task(mut sender: Sender<'static, MyDriver>) -> ! {
+pub async fn usb_logger_task(mut sender: Sender<'static, NrfUsbDriver>) -> ! {
     let _ = sender.write_all(b"Pager serial logger started.\r\n").await;
     loop {
         let msg = LOG_CHANNEL.receive().await;
@@ -23,10 +20,7 @@ pub async fn usb_logger_task(mut sender: Sender<'static, MyDriver>) -> ! {
 }
 
 #[embassy_executor::task]
-pub async fn usb_receiver_task(
-    mut receiver: Receiver<'static, MyDriver>,
-    _flash_mutex: &'static Mutex<ThreadModeRawMutex, Flash<'static>>,
-) -> ! {
+pub async fn usb_receiver_task(mut receiver: Receiver<'static, NrfUsbDriver>) -> ! {
     let mut cmd_buf = [0u8; 128];
     let mut cmd_len = 0;
 

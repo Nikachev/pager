@@ -6,7 +6,7 @@ Custom bare-metal firmware for the **Pager** device (nRF52840, based on a nice!n
 
 ## 🚀 Key Features
 
-*   **Single-Slot Secure UF2 Bootloader**: 48 KB bootloader with Ed25519 digital signature validation, SHA-256 integrity verification, and Double-Tap reset trigger.
+*   **Single-Slot Secure UF2 Bootloader**: 48 KB bootloader with Ed25519 digital signature validation, SHA-256 integrity verification, 4KB page buffering, and Double-Tap reset trigger. Auto-mounts over USB as `PAGER_BOOT`.
 *   **WebUSB Control Plane**: Direct USB bulk interface for control commands and signed DFU updates accessible via WebUSB.
 *   **CDC-ACM Serial Logging**: Stream real-time diagnostic logs over standard USB serial (`/dev/cu.usbmodem*`).
 *   **BLE GATT & HID Keyboard**: Advertises as `Pager` and emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
@@ -77,9 +77,27 @@ bootloader can only validate packages signed by a public key embedded in its
 own firmware. A deliberate key rotation requires embedding the next public
 key and deploying that bootloader first.
 
----
+### DFU Flashing Architecture
 
-## 📦 Build & Flash via Makefile
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as Host PC (Python / Finder)
+    participant App as Main Application (Pager)
+    participant DFU as Bootloader (PAGER_BOOT)
+    participant Flash as NVMC Flash Memory
+
+    Host->>App: 1. Send 'dfu' command via CDC-ACM / WebUSB
+    App->>App: 2. Write DBL_TAP_MAGIC to GPREGRET & sys_reset()
+    App-->>DFU: 3. MCU Reboots into Bootloader Mode
+    DFU-->>Host: 4. Mounts USB Mass Storage 'PAGER_BOOT' (FAT16)
+    Host->>DFU: 5. Write 1031 UF2 Blocks (4KB Page Buffered)
+    DFU->>Flash: 6. Flush 4KB Pages to NVMC Flash (0x0C000..0xFE000)
+    DFU->>DFU: 7. Verify Ed25519 Signature & SHA-256 Digest
+    DFU->>App: 8. Validation PASS -> sys_reset() & Jump to 0x0C100
+```
+
+# 📦 Build & Flash via Makefile
 
 A standard `Makefile` is available for building, flashing, and testing:
 
@@ -88,7 +106,7 @@ A standard `Makefile` is available for building, flashing, and testing:
 make build
 
 # 2. Flash via USB UF2 Bootloader
-make flash               # or: python3 flash_uf2.py
+make flash               # or: python3 tools/flash_uf2.py
 
 # 3. Flash via SWD Probe (Hardware Recovery)
 make flash-swd
@@ -112,12 +130,16 @@ make flash-swd
 
 ---
 
-## 🧪 Verification & CI
+## 🧪 Verification & Local Testing
 
-Run local CI checks before committing:
+> [!IMPORTANT]
+> - **Platform Target**: All build scripts, USB tools, `libusb` dynamic bindings (`/opt/homebrew/lib/libusb-1.0.dylib`), and HIL tests are designed exclusively for **macOS**.
+> - **No CI/CD Pipelines**: CI/CD pipelines are omitted by design. All compilation, linting, unit tests, and hardware tests are executed locally by developers.
+
+Run local verification checks before committing:
 
 ```bash
 make ci
 ```
 
-This runs code formatting checks (`cargo fmt`), Clippy linter, bootloader compilation, protocol unit-tests, layout validation, and builds/signs packages for both slot A and slot B.
+This runs code formatting checks (`cargo fmt`), Clippy linter, bootloader compilation, protocol unit-tests, layout validation, and builds/signs the release package.

@@ -3,7 +3,7 @@
 use crate::protocol;
 use embassy_time::{Duration, Timer};
 
-use crate::{ble, web, webusb, MyDriver};
+use crate::{ble, usb_detach, webusb, NrfUsbDriver};
 
 const USB_COMMAND_PING: u8 = 1;
 const USB_COMMAND_GET_INFO: u8 = 2;
@@ -14,13 +14,14 @@ const USB_COMMAND_DISCONNECT: u8 = 6;
 const USB_COMMAND_CLEAR_PROFILE: u8 = 7;
 const USB_COMMAND_TYPE_TEXT: u8 = 8;
 const USB_COMMAND_REBOOT_BOOTLOADER: u8 = 9;
+const USB_COMMAND_GET_LOGS: u8 = 10;
 
 const USB_ERROR_BAD_REQUEST: u8 = 1;
 const USB_ERROR_UNSUPPORTED_COMMAND: u8 = 2;
 const USB_ERROR_BUSY: u8 = 3;
 
 pub async fn webusb_reply(
-    transport: &mut webusb::Transport<'static, MyDriver>,
+    transport: &mut webusb::Transport<'static, NrfUsbDriver>,
     kind: protocol::UsbFrameKind,
     request_id: u32,
     payload: &[u8],
@@ -32,7 +33,7 @@ pub async fn webusb_reply(
 }
 
 #[embassy_executor::task]
-pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) -> ! {
+pub async fn webusb_task(mut transport: webusb::Transport<'static, NrfUsbDriver>) -> ! {
     let mut pending = [0u8; protocol::USB_FRAME_HEADER_LEN + protocol::USB_MAX_PAYLOAD];
     let mut pending_len: usize;
     let mut transfer = [0u8; 64];
@@ -109,7 +110,7 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                                 let state = ble::KEYBOARD_STATE.lock(|state| {
                                     let state = state.borrow();
                                     [
-                                        state.active_slot as u8,
+                                        state.active_profile as u8,
                                         state.pairing_mode as u8,
                                         state.bonds[0].is_some() as u8,
                                         state.bonds[1].is_some() as u8,
@@ -127,10 +128,11 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                             [USB_COMMAND_SWITCH_PROFILE, slot @ 0..=2] => {
                                 ble::KEYBOARD_STATE.lock(|state| {
                                     let mut state = state.borrow_mut();
-                                    state.active_slot = *slot as usize;
+                                    state.active_profile = *slot as usize;
                                     state.pairing_mode = false;
                                 });
                                 ble::PERSIST_STATE.signal(());
+                                crate::led::LED_MODE.signal(0);
                                 let result =
                                     if ble::try_send_command(ble::BleCommand::RestartAdvertising) {
                                         protocol::UsbFrameKind::Response
@@ -147,8 +149,8 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                             [USB_COMMAND_ENABLE_PAIRING] => {
                                 ble::KEYBOARD_STATE.lock(|state| {
                                     let mut state = state.borrow_mut();
-                                    let active_slot = state.active_slot;
-                                    state.bonds[active_slot] = None;
+                                    let active_profile = state.active_profile;
+                                    state.bonds[active_profile] = None;
                                     state.pairing_mode = true;
                                 });
                                 ble::PERSIST_STATE.signal(());
@@ -179,11 +181,14 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                                 webusb_reply(&mut transport, result, header.request_id, body).await;
                             }
                             [USB_COMMAND_CLEAR_PROFILE, slot @ 0..=2] => {
-                                ble::KEYBOARD_STATE
-                                    .lock(|state| state.borrow_mut().bonds[*slot as usize] = None);
+                                let slot = *slot as usize;
+                                ble::KEYBOARD_STATE.lock(|state| {
+                                    let mut state = state.borrow_mut();
+                                    state.bonds[slot] = None;
+                                });
                                 ble::PERSIST_STATE.signal(());
                                 let result =
-                                    if ble::try_send_command(ble::BleCommand::RestartAdvertising) {
+                                    if ble::try_send_command(ble::BleCommand::SyncActiveBond) {
                                         protocol::UsbFrameKind::Response
                                     } else {
                                         protocol::UsbFrameKind::Error
@@ -196,19 +201,20 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                                 webusb_reply(&mut transport, result, header.request_id, body).await;
                             }
                             [USB_COMMAND_TYPE_TEXT, text @ ..] => {
-                                let command = core::str::from_utf8(text)
-                                    .ok()
-                                    .and_then(|text| heapless::String::<128>::try_from(text).ok())
-                                    .map(ble::BleCommand::TypeString);
-                                let result = match command {
-                                    Some(command) => {
-                                        if ble::try_send_command(command) {
+                                let result = match core::str::from_utf8(text) {
+                                    Ok(s) => {
+                                        let mut heap_str = heapless::String::<128>::new();
+                                        if heap_str.push_str(s).is_ok()
+                                            && ble::try_send_command(ble::BleCommand::TypeString(
+                                                heap_str,
+                                            ))
+                                        {
                                             protocol::UsbFrameKind::Response
                                         } else {
                                             protocol::UsbFrameKind::Error
                                         }
                                     }
-                                    None => protocol::UsbFrameKind::Error,
+                                    Err(_) => protocol::UsbFrameKind::Error,
                                 };
                                 let body = if result == protocol::UsbFrameKind::Response {
                                     &[0][..]
@@ -227,7 +233,24 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, MyDriver>) ->
                                 )
                                 .await;
                                 Timer::after(Duration::from_millis(200)).await;
-                                web::reset_after_usb_detach().await;
+                                usb_detach::reset_after_usb_detach().await;
+                            }
+                            [USB_COMMAND_GET_LOGS] => {
+                                let logs = crate::get_logs();
+                                let mut buf = heapless::Vec::<u8, 512>::new();
+                                for line in logs.iter() {
+                                    if buf.len() + line.len() < 512 {
+                                        let _ = buf.extend_from_slice(line.as_bytes());
+                                        let _ = buf.push(b'\n');
+                                    }
+                                }
+                                webusb_reply(
+                                    &mut transport,
+                                    protocol::UsbFrameKind::Response,
+                                    header.request_id,
+                                    &buf,
+                                )
+                                .await;
                             }
                             _ => {
                                 webusb_reply(

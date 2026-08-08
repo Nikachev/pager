@@ -1,41 +1,225 @@
 <!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pager — Bluetooth Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-*{box-sizing:border-box}
-body{margin:0;background:#f5f6f4;color:#18201b;font:15px system-ui,-apple-system,sans-serif}
-main{max-width:620px;margin:auto;padding:22px 16px 40px}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
-h1{font-size:22px;margin:0;letter-spacing:-.5px}
-small,.muted{color:#68726b}
-.state{font-size:13px;color:#b13a2e;font-weight:bold}
-.state:before{content:'● ';font-size:11px}
-.state.on{color:#18794e}
-section{background:#fff;border:1px solid #dfe4df;border-radius:12px;padding:16px;margin:12px 0}
-h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#68726b;margin:0 0 12px}
-.row{display:flex;align-items:center;gap:10px}
-button{font:inherit;padding:10px 14px;background:#fff;color:#18201b;border:1px solid #ccd5ce;border-radius:8px;cursor:pointer}
-button:hover{background:#f0f4f0}
-button:disabled{opacity:0.45;cursor:not-allowed}
-.primary{background:#1c6b48;color:#fff;border-color:#1c6b48}
-.primary:hover{background:#145738}
-.warn{color:#b13a2e;border-color:#e2b8b2}
-.control{display:none;gap:12px}
-.control.show{display:grid;grid-template-columns:1fr auto;align-items:center}
-.control p{margin:3px 0 0;color:#68726b;font-size:12px}
-.switch{appearance:none;width:40px;height:24px;border-radius:12px;background:#cbd4cd;padding:2px;transition:.2s;cursor:pointer}
-.switch:after{content:'';display:block;width:20px;height:20px;background:#fff;border-radius:50%;transition:.2s}
-.switch:checked{background:#1c6b48}
-.switch:checked:after{transform:translateX(16px)}
-output{font:13px ui-monospace,SFMono-Regular,monospace;color:#18794e;border:1px solid #cde0d3;background:#f3f8f4;border-radius:7px;padding:6px 10px}
-pre{height:200px;overflow:auto;margin:0;border-radius:8px;background:#17211b;color:#d8e5dc;padding:12px;font:12px ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}
-.time{color:#8da392}
-.ok{color:#7fd6a7}
-.warnlog{color:#f0c675}
+:root {
+  --bg-main: #0b0f19;
+  --bg-card: rgba(22, 31, 48, 0.7);
+  --border-card: rgba(255, 255, 255, 0.08);
+  --text-main: #f3f4f6;
+  --text-muted: #9ca3af;
+  --accent-emerald: #10b981;
+  --accent-emerald-glow: rgba(16, 185, 129, 0.25);
+  --accent-crimson: #ef4444;
+  --accent-blue: #3b82f6;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg-main);
+  background-image: 
+    radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.12) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
+  color: var(--text-main);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+}
+main {
+  max-width: 680px;
+  margin: auto;
+  padding: 36px 20px 60px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 28px;
+}
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #ffffff 0%, #9ca3af 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+small, .muted {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-crimson);
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 20px;
+  padding: 6px 14px;
+  transition: all 0.3s ease;
+}
+.state:before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-crimson);
+  box-shadow: 0 0 8px var(--accent-crimson);
+}
+.state.on {
+  color: var(--accent-emerald);
+  background: rgba(16, 185, 129, 0.1);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+.state.on:before {
+  background: var(--accent-emerald);
+  box-shadow: 0 0 10px var(--accent-emerald);
+}
+section {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-card);
+  border-radius: 16px;
+  padding: 20px;
+  margin: 16px 0;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+h2 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin: 0 0 14px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+button {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 18px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-main);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.primary {
+  background: var(--accent-emerald);
+  color: #042f2e;
+  font-weight: 600;
+  border-color: var(--accent-emerald);
+  box-shadow: 0 0 15px var(--accent-emerald-glow);
+}
+.primary:hover:not(:disabled) {
+  background: #34d399;
+  border-color: #34d399;
+}
+.warn {
+  color: var(--accent-crimson);
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.2);
+}
+.warn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+}
+.control {
+  display: none;
+  gap: 16px;
+}
+.control.show {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+.control p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.switch {
+  appearance: none;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.15);
+  padding: 2px;
+  transition: 0.25s ease;
+  cursor: pointer;
+  position: relative;
+}
+.switch:after {
+  content: '';
+  display: block;
+  width: 20px;
+  height: 20px;
+  background: #ffffff;
+  border-radius: 50%;
+  transition: 0.25s ease;
+}
+.switch:checked {
+  background: var(--accent-emerald);
+}
+.switch:checked:after {
+  transform: translateX(20px);
+}
+output {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  color: var(--accent-emerald);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+  border-radius: 8px;
+  padding: 8px 14px;
+}
+pre {
+  height: 220px;
+  overflow: auto;
+  margin: 0;
+  border-radius: 10px;
+  background: #060911;
+  border: 1px solid var(--border-card);
+  color: #e5e7eb;
+  padding: 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.time { color: #6b7280; }
+.ok { color: #34d399; }
+.warnlog { color: #fbbf24; }
 </style>
+</head>
+<body>
 <main>
   <header>
-    <div><h1>Pager Bluetooth</h1><small>BLE GATT & Heartbeat Dashboard</small></div>
+    <div>
+      <h1>Pager Bluetooth</h1>
+      <small>BLE GATT & Heartbeat Dashboard</small>
+    </div>
     <span id="status" class="state">disconnected</span>
   </header>
 
@@ -45,14 +229,20 @@ pre{height:200px;overflow:auto;margin:0;border-radius:8px;background:#17211b;col
       <button id="connect" class="primary">Connect via Bluetooth</button>
       <button id="disconnect" class="warn" hidden>Disconnect</button>
     </div>
-    <p class="muted">Ensure Pager is advertising over Bluetooth.</p>
+    <p class="muted" style="margin:12px 0 0">Ensure Pager is advertising over Bluetooth.</p>
   </section>
 
   <section id="controls" class="control">
-    <div><strong>Status LED Mode</strong><p>Enable manual ON mode; unchecking restores automatic mode.</p></div>
+    <div>
+      <strong>Status LED Mode</strong>
+      <p>Enable manual ON mode; unchecking restores automatic mode.</p>
+    </div>
     <input id="led" class="switch" type="checkbox">
-    <div><strong>Heartbeat Counter</strong><p>Live periodic notification from board.</p></div>
-    <output id="value">—</output>
+    <div style="margin-top:12px">
+      <strong>Heartbeat Counter</strong>
+      <p>Live periodic notification from board.</p>
+    </div>
+    <output id="value" style="margin-top:12px">—</output>
   </section>
 
   <section>
