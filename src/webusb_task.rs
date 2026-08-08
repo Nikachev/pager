@@ -44,6 +44,7 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, NrfUsbDriver>
         crate::log_msg!("WEBUSB:CONNECTED");
 
         loop {
+            crate::signal_heartbeat(crate::HEARTBEAT_WEBUSB);
             let n = match transport.read_transfer(&mut transfer).await {
                 Ok(n) if n > 0 => n,
                 _ => {
@@ -236,14 +237,13 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, NrfUsbDriver>
                                 usb_detach::reset_after_usb_detach().await;
                             }
                             [USB_COMMAND_GET_LOGS] => {
-                                let logs = crate::get_logs();
                                 let mut buf = heapless::Vec::<u8, 512>::new();
-                                for line in logs.iter() {
+                                crate::with_logs(|line| {
                                     if buf.len() + line.len() < 512 {
                                         let _ = buf.extend_from_slice(line.as_bytes());
                                         let _ = buf.push(b'\n');
                                     }
-                                }
+                                });
                                 webusb_reply(
                                     &mut transport,
                                     protocol::UsbFrameKind::Response,

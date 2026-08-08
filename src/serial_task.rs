@@ -39,7 +39,7 @@ pub async fn usb_receiver_task(mut receiver: Receiver<'static, NrfUsbDriver>) ->
                             if cmd_str == "dfu" || cmd_str == "reboot" || cmd_str == "bootloader" {
                                 crate::log_msg!("SERIAL:REBOOT_TO_BOOTLOADER");
                                 Timer::after(Duration::from_millis(100)).await;
-                                crate::flash::enter_bootloader();
+                                crate::usb_detach::reset_after_usb_detach().await;
                             } else if let Some(text) = cmd_str.strip_prefix("type ") {
                                 crate::log_msg!("Serial command type: {}", text);
                                 let mut s = heapless::String::<128>::new();

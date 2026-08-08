@@ -6,10 +6,10 @@ Custom bare-metal firmware for the **Pager** device (nRF52840, based on a nice!n
 
 ## 🚀 Key Features
 
-*   **Single-Slot Secure UF2 Bootloader**: 48 KB bootloader with Ed25519 digital signature validation, SHA-256 integrity verification, 4KB page buffering, and Double-Tap reset trigger. Auto-mounts over USB as `PAGER_BOOT`.
+*   **Single-Slot Secure UF2 Bootloader**: 48 KB bootloader with Ed25519 digital signature validation, SHA-256 integrity verification, 4KB page buffering, instant `RESETREAS` fast-boot, dynamic UTC build timestamps in `INFO_UF2.TXT`, and Double-Tap reset trigger. Auto-mounts over USB as `PAGER_BOOT`.
 *   **WebUSB Control Plane**: Direct USB bulk interface for control commands and signed DFU updates accessible via WebUSB.
-*   **CDC-ACM Serial Logging**: Stream real-time diagnostic logs over standard USB serial (`/dev/cu.usbmodem*`).
-*   **BLE GATT & HID Keyboard**: Advertises as `Pager` and emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
+*   **CDC-ACM Serial Logging**: Stream real-time diagnostic logs over standard USB serial (`/dev/cu.usbmodem*`) with auto-reconnecting log monitor.
+*   **BLE GATT & HID Keyboard**: Advertises as `Pager` using factory FICR Bluetooth device address, emulates a full Bluetooth Low Energy HID keyboard with 3 profile slots, pairing mode control, and text typing emulation.
 *   **Web Bluetooth UI**: A static client webpage (`ble_client.html`) using Chrome Web Bluetooth to connect directly to the board over BLE, control the LED, and view live heartbeat logs.
 
 Each USB descriptor serial is derived from the nRF52840 factory device ID.

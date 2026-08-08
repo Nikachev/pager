@@ -96,9 +96,18 @@ pub fn get_virtual_fat_sector(lba: u32, buf: &mut [u8]) {
             write_hex(dev0, &mut info_buf, &mut off);
             write_hex(dev1, &mut info_buf, &mut off);
 
-            let footer = b"\r\nDate: Aug  8 2026\r\n";
-            info_buf[off..off + footer.len()].copy_from_slice(footer);
-            off += footer.len();
+            let prefix = b"\r\nDate: ";
+            info_buf[off..off + prefix.len()].copy_from_slice(prefix);
+            off += prefix.len();
+
+            let build_date = option_env!("BUILD_DATE").unwrap_or("2026-08-08 21:30:00 UTC").as_bytes();
+            let date_len = build_date.len().min(64);
+            info_buf[off..off + date_len].copy_from_slice(&build_date[..date_len]);
+            off += date_len;
+
+            let suffix = b"\r\n";
+            info_buf[off..off + suffix.len()].copy_from_slice(suffix);
+            off += suffix.len();
 
             let len = off.min(512);
             buf[..len].copy_from_slice(&info_buf[..len]);

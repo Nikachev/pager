@@ -75,7 +75,11 @@ pre{height:220px;overflow:auto;margin:0;border-radius:8px;background:#17211b;col
 
 <script>
 const VID=0x1209,PID=0x0002,H=16,ENC=new TextEncoder(),DEC=new TextDecoder();
-let d,iface,inEp,outEp,id=1,active=0,rx=[];
+const PGR1=0x31524750;
+const KIND_COMMAND=1,KIND_RESPONSE=2;
+const CMD_PING=1,CMD_GET_INFO=2,CMD_GET_KEYBOARD_STATE=3,CMD_SWITCH_PROFILE=4,CMD_ENABLE_PAIRING=5,CMD_DISCONNECT=6,CMD_CLEAR_PROFILE=7,CMD_TYPE_TEXT=8,CMD_REBOOT_BOOTLOADER=9,CMD_GET_LOGS=10;
+
+let d,iface,inEp,outEp,reqId=1,active=0,rx=[];
 const $=x=>document.getElementById(String(x).replace(/^#/,''));
 
 function log(text,kind=''){
@@ -115,7 +119,7 @@ async function call(kind,p){
     for(let i=0;i<8;i++){
       let answer=await recv();
       if(answer.id!==req){log(`Ignoring stale WebUSB response ${answer.id}; expected ${req}`,'warnlog');continue}
-      if(answer.kind===5){if(kind===CMD_SWITCH_PROFILE&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
+      if(answer.kind===5){if(kind===KIND_COMMAND&&p[0]===CMD_SWITCH_PROFILE&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
       return answer.payload
     }
     if(!busy)throw Error('No matching device response');
@@ -127,7 +131,7 @@ async function call(kind,p){
 function enabled(v){['refresh','pair','disconnect','clear','type','reboot_bootloader','get_logs'].forEach(x=>$(x).disabled=!v)}
 
 async function state(){
-  let s=await call(CMD_PING,[CMD_GET_KEYBOARD_STATE]);
+  let s=await call(KIND_COMMAND,[CMD_GET_KEYBOARD_STATE]);
   active=s[0];
   $('profiles').style.display='block';
   $('profiles').textContent=`Active profile ${active+1}; pairing ${s[1]?'enabled':'disabled'}; bonds:${s.slice(2).map((v,i)=>` ${i+1}:${v?'yes':'empty'}`).join('')}`;
@@ -166,7 +170,7 @@ $('refresh').onclick=()=>state().catch(e=>log(e.message,'errlog'));
 $('get_logs').onclick=async()=>{
   try{
     log('Fetching diagnostic logs from device...');
-    let res=await call(1,[10]);
+    let res=await call(KIND_COMMAND,[CMD_GET_LOGS]);
     let text=new TextDecoder().decode(res);
     log(`=== Device Logs ===\n${text}`,'ok');
   }catch(e){
@@ -177,7 +181,7 @@ $('get_logs').onclick=async()=>{
 $('reboot_bootloader').onclick=async()=>{
   try{
     log('Sending command to reboot device into Bootloader DFU mode...');
-    await call(CMD_PING,[CMD_REBOOT_BOOTLOADER]);
+    await call(KIND_COMMAND,[CMD_REBOOT_BOOTLOADER]);
     setStatus('disconnected',false);
     enabled(false);
     log('Reboot command sent! Board is entering Pager Bootloader DFU mode.','ok');
@@ -188,7 +192,7 @@ $('reboot_bootloader').onclick=async()=>{
 
 $('pair').onclick=async()=>{
   try{
-    await call(CMD_PING,[CMD_ENABLE_PAIRING]);
+    await call(KIND_COMMAND,[CMD_ENABLE_PAIRING]);
     log('Pairing mode enabled for active profile.','ok');
     await state()
   }catch(e){
@@ -198,7 +202,7 @@ $('pair').onclick=async()=>{
 
 $('disconnect').onclick=async()=>{
   try{
-    await call(CMD_PING,[CMD_DISCONNECT]);
+    await call(KIND_COMMAND,[CMD_DISCONNECT]);
     log('BLE disconnect command sent.','ok')
   }catch(e){
     log(`Disconnect failed: ${e.message||e}`,'errlog')
@@ -207,7 +211,7 @@ $('disconnect').onclick=async()=>{
 
 $('clear').onclick=async()=>{
   try{
-    await call(1,[7,active]);
+    await call(KIND_COMMAND,[CMD_CLEAR_PROFILE,active]);
     log(`Cleared active profile ${active+1}.`,'ok');
     await state()
   }catch(e){
@@ -220,7 +224,7 @@ $('type').onclick=async()=>{
     let val=$('text').value;
     if(!val)return;
     let t=ENC.encode(val);
-    await call(1,[8,...t]);
+    await call(KIND_COMMAND,[CMD_TYPE_TEXT,...t]);
     log(`Typed string (${val.length} chars) over HID.`,'ok');
     $('text').value=''
   }catch(e){

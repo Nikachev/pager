@@ -266,3 +266,14 @@ def test_corrupted_uf2_rejection():
     with pytest.raises(Exception):
         flasher.flash_uf2_bytes(bytes(bad_payload))
     print("Corrupted UF2 payload correctly rejected by flasher / validation!")
+
+
+@pytest.mark.smoke
+def test_partition_limits():
+    """Verify that built binary payloads fit within allocated Flash partitions"""
+    signed_bin = os.path.join(_REPO_ROOT, "dist", "pager-signed.bin")
+    if os.path.exists(signed_bin):
+        size = os.path.getsize(signed_bin)
+        assert size <= 925440, f"Signed payload {size} exceeds partition limit 925440"
+        print(f"Partition limit test passed: payload size {size} / 925440 bytes")
+

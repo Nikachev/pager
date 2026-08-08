@@ -8,6 +8,7 @@ const DFU_MAGIC: u8 = 0xB1;
 /// 8-bit magic for double-tap window detection
 const DBL_TAP_MAGIC: u8 = 0xA5;
 const NRF_POWER_GPREGRET: *mut u32 = 0x4000_051C as *mut u32;
+const NRF_POWER_RESETREAS: *mut u32 = 0x4000_0400 as *mut u32;
 
 pub fn check_and_set_double_tap() -> bool {
     // GPREGRET is 8-bit — only bits [7:0] are retained across reset
@@ -17,10 +18,21 @@ pub fn check_and_set_double_tap() -> bool {
         unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
         true
     } else {
-        // Set double-tap magic for 500ms window across hardware resets
-        unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, DBL_TAP_MAGIC as u32) };
-        cortex_m::asm::delay(500 * 64_000); // 500ms window
-        unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
+        let resetreas = unsafe { core::ptr::read_volatile(NRF_POWER_RESETREAS) };
+        if resetreas != 0 {
+            unsafe { core::ptr::write_volatile(NRF_POWER_RESETREAS, resetreas) };
+        }
+
+        // Only enter 500ms window if reset was triggered by physical RESET pin (bit 0)
+        let is_pin_reset = (resetreas & 0x01) != 0;
+
+        if is_pin_reset {
+            unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, DBL_TAP_MAGIC as u32) };
+            cortex_m::asm::delay(500 * 64_000); // 500ms window
+            unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
+        } else {
+            unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
+        }
         false
     }
 }

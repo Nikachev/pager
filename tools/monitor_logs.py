@@ -27,29 +27,34 @@ def monitor_logs():
     print("     Pager CDC-ACM Live Log Monitor              ")
     print("==================================================")
 
-    port = find_serial_port()
-    if not port:
-        print("⏳ Waiting for Pager device serial port (/dev/cu.usbmodem*)...")
-        while not port:
-            time.sleep(0.5)
-            port = find_serial_port()
+    while True:
+        port = find_serial_port()
+        if not port:
+            sys.stdout.write("\r⏳ Waiting for Pager device serial port (/dev/cu.usbmodem*)...  ")
+            sys.stdout.flush()
+            while not port:
+                time.sleep(0.5)
+                port = find_serial_port()
+            print()
 
-    print(f"✅ Connected to serial port: {port}")
-    print("📡 Streaming live diagnostic logs (Ctrl+C to stop)...\n")
+        print(f"✅ Connected to serial port: {port}")
+        print("📡 Streaming live diagnostic logs (Ctrl+C to stop)...\n")
 
-    try:
-        s = serial.Serial(port, 115200, timeout=1)
-        s.write(b"\r\n")
-        s.flush()
-        while True:
-            line = s.readline().decode('utf-8', errors='ignore').strip()
-            if line:
-                t = time.strftime("%H:%M:%S")
-                print(f"\033[90m[{t}]\033[0m {line}")
-    except KeyboardInterrupt:
-        print("\n👋 Monitor stopped.")
-    except Exception as e:
-        print(f"\n⚠️ Serial connection error: {e}")
+        try:
+            s = serial.Serial(port, 115200, timeout=1)
+            s.write(b"\r\n")
+            s.flush()
+            while True:
+                line = s.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    t = time.strftime("%H:%M:%S")
+                    print(f"\033[90m[{t}]\033[0m {line}")
+        except KeyboardInterrupt:
+            print("\n👋 Monitor stopped by user.")
+            break
+        except Exception as e:
+            print(f"\n⚠️ Serial connection lost ({e}). Reconnecting in 1s...")
+            time.sleep(1.0)
 
 if __name__ == "__main__":
     monitor_logs()

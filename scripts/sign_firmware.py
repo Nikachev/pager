@@ -11,7 +11,7 @@ from pathlib import Path
 MAGIC = b"PGRFW001"
 MANIFEST_PAGE_SIZE = 4096
 PENDING = 0xFFFF_FFFF
-MAX_IMAGE_SIZE = 495616  # 484 KiB; keep in sync with layout.json
+MAX_IMAGE_SIZE = 925440  # 903.75 KiB single-slot payload limit
 
 
 def main():

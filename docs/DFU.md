@@ -57,9 +57,9 @@ pub struct ManifestHeader {
 ## 🔘 3. Double-Tap Reset Mechanism
 
 To allow manual user entry into DFU mode without a software command:
-- The bootloader and application write a magic flag (`0xA5`) to the retained power register `NRF_POWER_GPREGRET` (`0x4000_051C`) on pin reset or software DFU command.
-- If a second pin reset occurs within **500 ms**, the double-tap flag is confirmed.
-- A fast **15 ms** debounce filter prevents false triggers from mechanical pin noise.
+- The bootloader checks the hardware reset reason register `NRF_POWER_RESETREAS` (`0x4000_0400`). Cold power-on resets and software resets skip the 500 ms delay and boot directly into the main application.
+- On physical pin resets (Reset button press), the bootloader sets a magic flag (`0xA5`) in `NRF_POWER_GPREGRET` (`0x4000_051C`) and opens a **500 ms** window for a second tap.
+- If a second pin reset occurs within **500 ms**, the double-tap flag is confirmed and DFU mode is entered.
 - When double-tap is detected, the bootloader stays in DFU mode and blinks `[3 short blinks]` (User Request).
 
 ---

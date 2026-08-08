@@ -221,6 +221,22 @@ def flash_uf2(filename, vid=DEFAULT_VID, pid=DEFAULT_PID):
     speed_kb = (len(uf2_data) / 1024) / max(elapsed, 0.001)
     print(f"\n🎉 UF2 Firmware transferred successfully in {elapsed:.2f}s ({speed_kb:.1f} KB/s)!", flush=True)
 
+def flash_uf2_bytes(uf2_data: bytes, vid=DEFAULT_VID, pid=DEFAULT_PID):
+    if len(uf2_data) < 512 or len(uf2_data) % 512 != 0:
+        raise ValueError("Invalid UF2 payload length: must be a multiple of 512 bytes")
+    magic0, magic1, magic_end = struct.unpack("<III", uf2_data[:8] + uf2_data[508:512])
+    if magic0 != 0x0A324655 or magic1 != 0x9E5D5157 or magic_end != 0x0AB16F30:
+        raise ValueError("Invalid UF2 block magic numbers")
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".uf2", delete=False) as f:
+        f.write(uf2_data)
+        tmp_path = f.name
+    try:
+        flash_uf2(tmp_path, vid, pid)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
 def main():
     parser = argparse.ArgumentParser(description="Pager USB Mass Storage UF2 Firmware Flasher")
     parser.add_argument("--file", "-f", default="dist/pager.uf2", help="Path to signed UF2 file (default: dist/pager.uf2)")
@@ -232,3 +248,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

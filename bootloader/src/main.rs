@@ -14,7 +14,6 @@ mod scsi;
 mod uf2;
 
 use cortex_m_rt::entry;
-use ed25519_dalek::{Signature, VerifyingKey};
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::nvmc::Nvmc;
 use memory_map::{FIRMWARE_END, FIRMWARE_START, MANIFEST_SIZE};
@@ -216,14 +215,7 @@ fn validate_existing_firmware() -> FirmwareValidationResult {
     let valid_vector = valid_vector_table(image_slice, image_start);
 
     let signed_msg = manifest.signed_message();
-    let valid_sig = public_key::FIRMWARE_SIGNING_PUBLIC_KEYS
-        .iter()
-        .any(|key_bytes| {
-            VerifyingKey::from_bytes(key_bytes).is_ok_and(|key| {
-                key.verify_strict(&signed_msg, &Signature::from_bytes(&manifest.signature))
-                    .is_ok()
-            })
-        });
+    let valid_sig = public_key::verify_signature(&signed_msg, &manifest.signature);
 
     let computed_digest = Sha256::digest(image_slice);
     let valid_hash = computed_digest.as_slice() == manifest.digest;

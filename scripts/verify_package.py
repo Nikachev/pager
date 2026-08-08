@@ -12,7 +12,7 @@ MAGIC = b"PGRFW001"
 MANIFEST_PAGE_SIZE = 4096
 MANIFEST_FORMAT = "<I8sIII32s64s"
 PENDING = 0xFFFF_FFFF
-MAX_IMAGE_SIZE = 495616  # 484 KiB; keep in sync with layout.json
+MAX_IMAGE_SIZE = 925440  # 903.75 KiB single-slot payload limit
 
 
 def verify_signature(message: bytes, signature: bytes, keys: list[Path]) -> None:

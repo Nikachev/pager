@@ -7,7 +7,6 @@ use crate::memory_map::{
 use crate::scsi::{handle_scsi_inquiry, handle_scsi_read_capacity};
 use crate::uf2::Uf2Block;
 
-use ed25519_dalek::{Signature, VerifyingKey};
 use embassy_nrf::nvmc::Nvmc;
 use embedded_storage::nor_flash::NorFlash;
 use sha2::{Digest, Sha256};
@@ -188,17 +187,7 @@ impl<'a> Uf2FlashEngine<'a> {
             // Verify Ed25519 signature
             let signed_msg = manifest.signed_message();
             let valid_sig =
-                crate::public_key::FIRMWARE_SIGNING_PUBLIC_KEYS
-                    .iter()
-                    .any(|key_bytes| {
-                        VerifyingKey::from_bytes(key_bytes).is_ok_and(|key| {
-                            key.verify_strict(
-                                &signed_msg,
-                                &Signature::from_bytes(&manifest.signature),
-                            )
-                            .is_ok()
-                        })
-                    });
+                crate::public_key::verify_signature(&signed_msg, &manifest.signature);
 
             if !valid_sig {
                 return Err(());

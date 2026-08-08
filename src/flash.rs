@@ -53,13 +53,19 @@ pub async fn load_persistent_state<F: NorFlash>(
     for &page_addr in &[STORAGE_PAGE0, STORAGE_PAGE1] {
         for slot in 0..SLOTS_PER_PAGE {
             let addr = page_addr + (slot * RECORD_SLOT_LEN) as u32;
-            let mut buf = [0u8; RECORD_SLOT_LEN];
-            if flash.read(addr, &mut buf).await.is_err() {
+            let mut header = [0u8; STORAGE_HEADER_LEN];
+            if flash.read(addr, &mut header).await.is_err() {
                 continue;
             }
 
             // Quick check for erased slot (all 0xFF)
-            if buf.iter().all(|&b| b == 0xFF) {
+            if header.iter().all(|&b| b == 0xFF) {
+                continue;
+            }
+
+            let mut buf = [0u8; RECORD_SLOT_LEN];
+            buf[..STORAGE_HEADER_LEN].copy_from_slice(&header);
+            if flash.read(addr + STORAGE_HEADER_LEN as u32, &mut buf[STORAGE_HEADER_LEN..]).await.is_err() {
                 continue;
             }
 
@@ -100,8 +106,16 @@ pub async fn save_persistent_state<F: NorFlash>(
     for &page_addr in &[STORAGE_PAGE0, STORAGE_PAGE1] {
         for slot in 0..SLOTS_PER_PAGE {
             let addr = page_addr + (slot * RECORD_SLOT_LEN) as u32;
+            let mut header = [0u8; STORAGE_HEADER_LEN];
+            flash.read(addr, &mut header).await?;
+
+            if header.iter().all(|&b| b == 0xFF) {
+                continue;
+            }
+
             let mut buf = [0u8; RECORD_SLOT_LEN];
-            flash.read(addr, &mut buf).await?;
+            buf[..STORAGE_HEADER_LEN].copy_from_slice(&header);
+            flash.read(addr + STORAGE_HEADER_LEN as u32, &mut buf[STORAGE_HEADER_LEN..]).await?;
 
             if let Some((seq, _)) = decode_storage(&buf).or_else(|| decode_storage_v2(&buf)) {
                 if !found_any || seq.wrapping_sub(max_seq) < 0x8000_0000 {

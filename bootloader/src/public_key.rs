@@ -20,3 +20,13 @@ pub const FIRMWARE_SIGNING_PUBLIC_KEYS: [[u8; 32]; 3] = [
         0x2d, 0xcb,
     ],
 ];
+
+pub fn verify_signature(msg: &[u8; 52], sig_bytes: &[u8; 64]) -> bool {
+    use ed25519_dalek::{Signature, VerifyingKey};
+    let signature = Signature::from_bytes(sig_bytes);
+    FIRMWARE_SIGNING_PUBLIC_KEYS.iter().any(|key_bytes| {
+        VerifyingKey::from_bytes(key_bytes).is_ok_and(|key| {
+            key.verify_strict(msg, &signature).is_ok()
+        })
+    })
+}

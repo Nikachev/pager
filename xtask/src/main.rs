@@ -96,8 +96,7 @@ fn print_memory_info() {
         let raw_size = fs::read(&boot_path)
             .map(|b| {
                 if b.starts_with(b"\x7fELF") {
-                    // Approximate binary payload size for ELF
-                    (b.len() / 7).min(BOOT_LIMIT)
+                    elf_binary_size(&b).unwrap_or(b.len())
                 } else {
                     b.len()
                 }
@@ -108,7 +107,7 @@ fn print_memory_info() {
         let bar = "█".repeat(bar_filled) + &"░".repeat(20 - bar_filled);
         println!("\n⚡ Bootloader Partition (0x00000..0x0C000):");
         println!(
-            "   Size: ~{} / {} bytes ({:.1}%)",
+            "   Size: {} / {} bytes ({:.1}%)",
             raw_size, BOOT_LIMIT, pct
         );
         println!("   [{}]", bar);
@@ -120,6 +119,33 @@ fn print_memory_info() {
         "\n💾 Storage Partition (0xFE000..0x100000): 8192 bytes (Persistent BLE Bonds & Settings)"
     );
     println!("==================================================");
+}
+
+fn elf_binary_size(elf: &[u8]) -> Option<usize> {
+    if elf.len() < 52 || &elf[..4] != b"\x7fELF" {
+        return None;
+    }
+    let phoff = u32::from_le_bytes(elf[0x1C..0x20].try_into().ok()?) as usize;
+    let phentsize = u16::from_le_bytes(elf[0x2A..0x2C].try_into().ok()?) as usize;
+    let phnum = u16::from_le_bytes(elf[0x2C..0x2E].try_into().ok()?) as usize;
+
+    let mut total_size = 0;
+    for i in 0..phnum {
+        let off = phoff + i * phentsize;
+        if off + 32 > elf.len() {
+            break;
+        }
+        let p_type = u32::from_le_bytes(elf[off..off + 4].try_into().ok()?);
+        if p_type == 1 {
+            let p_filesz = u32::from_le_bytes(elf[off + 16..off + 20].try_into().ok()?) as usize;
+            total_size += p_filesz;
+        }
+    }
+    if total_size > 0 {
+        Some(total_size)
+    } else {
+        None
+    }
 }
 
 fn build_firmware() {
@@ -311,7 +337,11 @@ fn load_or_create_signing_key(repo_root: &std::path::Path) -> SigningKey {
         }
     }
 
-    println!("🔑 Signing Firmware with Dev Key: [0x42; 32]");
+    println!("==================================================");
+    println!("⚠️  WARNING: Private PEM key not found!");
+    println!("🔑 Signed firmware using Dev Key: [0x42; 32]");
+    println!("⚠️  DO NOT DEPLOY DEV-KEY SIGNED FIRMWARE TO PRODUCTION");
+    println!("==================================================");
     SigningKey::from_bytes(&[0x42; 32])
 }
 

@@ -43,7 +43,7 @@ Command payloads contain a one-byte opcode followed by parameters:
 | `6` | `DISCONNECT` | Disconnect active BLE client | status byte (`0`) |
 | `7, slot` | `CLEAR_PROFILE` | Clear bond on profile (0–2) | status byte (`0`) |
 | `8, utf8…` | `TYPE_TEXT` | Emulate keyboard typing (max 128B) | status byte (`0`) |
-| `9` | `REBOOT_TO_BOOTLOADER` | Trigger GPREGRET double-tap & reboot | Device detaches USB and enters UF2 MSC bootloader |
+| `9` | `REBOOT_TO_BOOTLOADER` | Trigger GPREGRET double-tap & reboot | ASCII `BOOTLOADER` (followed by USB detach & reset) |
 | `10` | `GET_LOGS` | Retrieve last 32 diagnostic log entries | UTF-8 newline-separated log string |
 
 ## DFU Sequence Workflow

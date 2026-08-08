@@ -70,14 +70,12 @@ type LogHistory = RefCell<heapless::Vec<heapless::String<128>, 32>>;
 static LOG_HISTORY: SyncMutex<ThreadModeRawMutex, LogHistory> =
     SyncMutex::new(RefCell::new(heapless::Vec::new()));
 
-pub fn get_logs() -> heapless::Vec<heapless::String<128>, 32> {
+pub fn with_logs<F: FnMut(&str)>(mut f: F) {
     LOG_HISTORY.lock(|hist| {
-        let mut v = heapless::Vec::new();
         for item in hist.borrow().iter() {
-            let _ = v.push(item.clone());
+            f(item.as_str());
         }
-        v
-    })
+    });
 }
 
 #[macro_export]
@@ -111,6 +109,8 @@ fn start_watchdog() {
 }
 
 pub const HEARTBEAT_BLINK: u8 = 1 << 0;
+pub const HEARTBEAT_WEBUSB: u8 = 1 << 1;
+pub const HEARTBEAT_BLE: u8 = 1 << 2;
 pub static TASK_HEARTBEATS: AtomicU32 = AtomicU32::new(0);
 
 pub fn signal_heartbeat(flag: u8) {
@@ -167,8 +167,8 @@ fn factory_usb_serial() -> heapless::String<16> {
 }
 
 fn ble_static_random_address() -> [u8; 6] {
-    let low = pac::FICR.deviceid(0).read();
-    let high = pac::FICR.deviceid(1).read();
+    let low = pac::FICR.deviceaddr(0).read();
+    let high = pac::FICR.deviceaddr(1).read();
     let mut addr = [
         (low & 0xFF) as u8,
         ((low >> 8) & 0xFF) as u8,
@@ -179,14 +179,6 @@ fn ble_static_random_address() -> [u8; 6] {
     ];
     addr[5] |= 0xC0;
     addr
-}
-
-#[embassy_executor::task]
-async fn dummy_vbus_detect_task(vbus_detect: &'static SoftwareVbusDetect) -> ! {
-    loop {
-        vbus_detect.detected(true);
-        Timer::after(Duration::from_secs(1)).await;
-    }
 }
 
 #[embassy_executor::task]
@@ -361,8 +353,6 @@ async fn main(spawner: Spawner) {
     vbus_detect.ready();
     let driver = Driver::new(p.USBD, Irqs, vbus_detect);
 
-    spawner.spawn(unwrap!(dummy_vbus_detect_task(vbus_detect)));
-
     let mut usb_config = Config::new(USB_VENDOR_ID, USB_PRODUCT_ID);
     usb_config.manufacturer = Some(USB_MANUFACTURER);
     usb_config.product = Some(USB_PRODUCT_NAME);
@@ -424,7 +414,7 @@ async fn main(spawner: Spawner) {
     let _ = embassy_futures::join::join(runner.run(), async {
         loop {
             crate::log_msg!("BLE:ADVERTISING");
-            sync_active_bond(&stack);
+            crate::signal_heartbeat(crate::HEARTBEAT_BLE);
             let advertiser = match peripheral
                 .advertise(
                     &Default::default(),
@@ -536,40 +526,50 @@ async fn main(spawner: Spawner) {
                     Either3::Second(command) => match command {
                         ble::BleCommand::SyncActiveBond => sync_active_bond(&stack),
                         ble::BleCommand::TypeString(text) => {
+                            let mode = server
+                                .hid_service
+                                .protocol_mode
+                                .get(&server)
+                                .unwrap_or(1);
                             for ch in text.chars() {
                                 let Some((modifier, keycode)) = ble::ascii_to_hid(ch) else {
                                     continue;
                                 };
                                 let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
-                                if server
-                                    .hid_service
-                                    .input_keyboard
-                                    .notify(&conn, &report, true)
-                                    .await
-                                    .is_err()
-                                {
+                                let release = [0u8; 8];
+                                let send_res = if mode == 0 {
+                                    server
+                                        .hid_service
+                                        .boot_input_keyboard
+                                        .notify(&conn, &report, true)
+                                        .await
+                                } else {
+                                    server
+                                        .hid_service
+                                        .input_keyboard
+                                        .notify(&conn, &report, true)
+                                        .await
+                                };
+                                if send_res.is_err() {
                                     break;
                                 }
-                                let _ = server
-                                    .hid_service
-                                    .boot_input_keyboard
-                                    .notify(&conn, &report, true)
-                                    .await;
                                 Timer::after(Duration::from_millis(8)).await;
-                                if server
-                                    .hid_service
-                                    .input_keyboard
-                                    .notify(&conn, &[0; 8], true)
-                                    .await
-                                    .is_err()
-                                {
+                                let release_res = if mode == 0 {
+                                    server
+                                        .hid_service
+                                        .boot_input_keyboard
+                                        .notify(&conn, &release, true)
+                                        .await
+                                } else {
+                                    server
+                                        .hid_service
+                                        .input_keyboard
+                                        .notify(&conn, &release, true)
+                                        .await
+                                };
+                                if release_res.is_err() {
                                     break;
                                 }
-                                let _ = server
-                                    .hid_service
-                                    .boot_input_keyboard
-                                    .notify(&conn, &[0; 8], true)
-                                    .await;
                                 Timer::after(Duration::from_millis(8)).await;
                             }
                         }
