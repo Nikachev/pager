@@ -1,234 +1,122 @@
 <!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Pager — WebUSB Dashboard</title>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pager — USB control</title>
 <style>
-*{box-sizing:border-box}
-body{margin:0;background:#f5f6f4;color:#18201b;font:15px system-ui,-apple-system,sans-serif}
-main{max-width:620px;margin:auto;padding:22px 16px 40px}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
-h1{font-size:22px;margin:0;letter-spacing:-.5px}
-small,.muted{color:#68726b;font-size:13px}
-.state{font-size:13px;color:#b13a2e;font-weight:bold}
-.state:before{content:'● ';font-size:11px}
-.state.on{color:#18794e}
-section{background:#fff;border:1px solid #dfe4df;border-radius:12px;padding:16px;margin:12px 0}
-h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#68726b;margin:0 0 12px}
-.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-button,input[type="text"],input[type="file"]{font:inherit;padding:9px 13px;background:#fff;color:#18201b;border:1px solid #ccd5ce;border-radius:8px}
-button{cursor:pointer}
-button:hover{background:#f0f4f0}
-button:disabled{opacity:0.45;cursor:not-allowed}
-input[type="text"]{flex:1;min-width:180px}
-.primary{background:#1c6b48;color:#fff;border-color:#1c6b48}
-.primary:hover{background:#145738}
-.warn{color:#b13a2e;border-color:#e2b8b2}
-.warn:hover{background:#fdf2f1}
-output{display:block;font:13px ui-monospace,SFMono-Regular,monospace;color:#18794e;border:1px solid #cde0d3;background:#f3f8f4;border-radius:7px;padding:8px 12px;margin-top:10px}
-pre{height:220px;overflow:auto;margin:0;border-radius:8px;background:#17211b;color:#d8e5dc;padding:12px;font:12px ui-monospace,SFMono-Regular,monospace;white-space:pre-wrap}
-.time{color:#8da392}
-.ok{color:#7fd6a7}
-.warnlog{color:#f0c675}
-.errlog{color:#f88070}
+:root{color-scheme:light;--bg:#f6f7f9;--card:#fff;--text:#17202a;--muted:#697586;--line:#e3e7ec;--accent:#2563eb;--accent-soft:#eff6ff;--green:#15803d;--green-soft:#f0fdf4;--amber:#a16207;--amber-soft:#fffbeb;--red:#b42318;--red-soft:#fff1f0;--shadow:0 10px 30px rgba(20,32,50,.06)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}button{border:0;cursor:pointer}button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid rgba(37,99,235,.25);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.45}
+main{width:min(780px,100%);margin:auto;padding:28px 18px 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}.brand h1{margin:0;font-size:22px;letter-spacing:-.03em}.brand p{margin:2px 0 0;color:var(--muted);font-size:13px}.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:99px;background:var(--card);color:var(--muted);font-size:12px;font-weight:650}.pill:before{content:"";width:7px;height:7px;border-radius:50%;background:#98a2b3}.pill.on{color:var(--green);border-color:#bbf7d0;background:var(--green-soft)}.pill.on:before{background:#22c55e}.pill.busy{color:var(--amber);border-color:#fde68a;background:var(--amber-soft)}.pill.busy:before{background:#f59e0b}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px;margin:14px 0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel h2{margin:0;font-size:15px}.muted{color:var(--muted);font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.btn{min-height:38px;padding:8px 13px;border-radius:9px;background:#eef1f4;color:var(--text);font-weight:650}.btn:hover:not(:disabled){filter:brightness(.98)}.btn.primary{background:var(--accent);color:white}.btn.danger{background:var(--red-soft);color:var(--red)}.btn.ghost{background:transparent;border:1px solid var(--line)}
+.ble-summary{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--muted);font-size:13px}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.slot{min-width:0;border:1px solid var(--line);border-radius:13px;padding:14px;background:#fff;transition:.16s}.slot.active{border-color:#93c5fd;background:var(--accent-soft)}.slot.connected{border-color:#86efac;background:var(--green-soft)}.slot.pairing{border-color:#fcd34d;background:var(--amber-soft)}.slot-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.slot-number{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:750}.slot-state{font-size:11px;color:var(--muted);white-space:nowrap}.slot-name{margin:12px 0 3px;font-weight:720;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.slot-address{min-height:18px;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis}.slot-actions{display:flex;gap:6px;margin-top:13px}.slot-actions .btn{min-height:34px;padding:6px 9px;font-size:12px}.slot-actions .btn:first-child{flex:1}.icon-btn{width:34px;padding:0}.empty .slot-name{color:var(--muted);font-weight:600}
+.send{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:14px}.send input{min-width:0;border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:white;color:var(--text)}details{margin-top:14px}summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:650}.diagnostics{padding-top:12px}.log{height:170px;overflow:auto;margin-top:12px;padding:12px;border-radius:10px;background:#111827;color:#d1d5db;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.log .ok{color:#86efac}.log .err{color:#fca5a5}.log .warn{color:#fde68a}
+dialog{width:min(400px,calc(100% - 32px));border:1px solid var(--line);border-radius:15px;padding:0;box-shadow:0 24px 70px rgba(20,32,50,.22)}dialog::backdrop{background:rgba(15,23,42,.38)}.dialog-body{padding:20px}.dialog-body h3{margin:0 0 5px}.dialog-body p{margin:0 0 16px;color:var(--muted);font-size:13px}.dialog-body input{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}
+@media(max-width:650px){main{padding-top:20px}.topbar{align-items:flex-start}.slots{grid-template-columns:1fr}.slot-name{white-space:normal}.panel{padding:15px}.send{grid-template-columns:1fr}.send .btn{width:100%}}
 </style>
+</head>
+<body>
 <main>
-  <header>
-    <div><h1>Pager WebUSB</h1><small>WebUSB Dashboard & DFU Control</small></div>
-    <span id="status" class="state">disconnected</span>
+  <header class="topbar">
+    <div class="brand"><h1 id="device_title">Pager</h1><p>USB control</p></div>
+    <span id="usb_status" class="pill" role="status" aria-live="polite">USB disconnected</span>
   </header>
 
-  <section>
-    <h2>Connection</h2>
-    <div class="row">
-      <button id="connect" class="primary">Connect USB</button>
-      <button id="refresh" disabled>Refresh State</button>
-      <button id="reboot_bootloader" class="warn" disabled>Reboot to Bootloader (DFU)</button>
-    </div>
-    <output id="profiles" style="display:none"></output>
-    <p class="muted" style="margin:10px 0 0">Serve this page over HTTPS or localhost in Google Chrome.</p>
-  </section>
-
-  <section>
-    <h2>Device & Profile Controls</h2>
-    <div class="row" style="margin-bottom:12px">
-      <button id="pair" disabled>Pair New Host</button>
-      <button id="disconnect" disabled>Disconnect BLE</button>
-      <button id="get_logs" disabled>Get Device Logs</button>
-      <button id="clear" class="warn" disabled>Forget Active Profile</button>
-    </div>
-    <div class="row">
-      <input id="text" placeholder="Text to type over HID..." maxlength="128">
-      <button id="type" class="primary" disabled>Type</button>
+  <section class="panel">
+    <div class="panel-head"><div><h2>Device</h2><div id="device_hint" class="muted">Connect Pager to manage Bluetooth.</div></div><span id="ble_status" class="pill">Bluetooth unavailable</span></div>
+    <div class="actions">
+      <button id="connect" class="btn primary">Connect USB</button>
+      <button id="disconnect" class="btn ghost" hidden>Disconnect USB</button>
+      <button id="bluetooth_toggle" class="btn" hidden disabled>Turn Bluetooth on</button>
+      <button id="rename_device" class="btn" hidden disabled>Rename Pager</button>
+      <button id="cancel_pairing" class="btn" hidden disabled>Cancel pairing</button>
     </div>
   </section>
 
-  <section>
-    <h2>Firmware DFU Updates</h2>
-    <p class="muted" style="margin:0 0 10px">To flash updated firmware, click <strong>Reboot to Bootloader</strong> above, then run the Python flasher tool:</p>
-    <output style="color:#18201b;background:#f0f4f0">python3 tools/flash_uf2.py --file dist/pager.uf2</output>
+  <section class="panel">
+    <div class="panel-head"><div><h2>Bluetooth slots</h2><div class="muted">Choose a saved device, or select an empty slot to pair.</div></div></div>
+    <div id="slots" class="slots" aria-live="polite"></div>
   </section>
 
-  <section>
-    <h2>Log Console</h2>
-    <pre id="log"><span class="time">[ready]</span> Select Connect USB to begin.</pre>
+  <section class="panel">
+    <div class="panel-head"><div><h2>Keyboard test</h2><div class="muted">Send a short text to the currently connected host.</div></div></div>
+    <div class="send"><input id="text" aria-label="Keyboard test text" maxlength="256" placeholder="Text to type" disabled><button id="type" class="btn primary" disabled>Send</button></div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Diagnostics and firmware</summary>
+      <div class="diagnostics">
+        <div class="actions">
+          <button id="get_logs" class="btn ghost" disabled>Read device log</button>
+          <button id="reboot" class="btn danger" disabled>Reboot to bootloader</button>
+          <button id="factory_reset" class="btn danger" disabled>Factory reset</button>
+        </div>
+        <div id="log" class="log"><span class="warn">Ready. Connect Pager over USB.</span></div>
+      </div>
+    </details>
   </section>
 </main>
 
+<dialog id="rename_dialog"><form method="dialog" class="dialog-body"><h3>Rename device</h3><p>The slot number is added automatically.</p><input id="rename_input" aria-label="Common Pager name" maxlength="24" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="rename_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="slot_name_dialog"><form method="dialog" class="dialog-body"><h3>Rename paired device</h3><p>The Bluetooth MAC address will remain visible below the name.</p><input id="slot_name_input" aria-label="Paired device alias" maxlength="32" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="slot_name_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="confirm_dialog"><form method="dialog" class="dialog-body"><h3 id="confirm_title">Confirm action</h3><p id="confirm_message"></p><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="confirm_accept" value="default" class="btn danger">Continue</button></div></form></dialog>
+
 <script>
-const VID=0x1209,PID=0x0002,H=16,ENC=new TextEncoder(),DEC=new TextDecoder();
-const PGR1=0x31524750;
-const KIND_COMMAND=1,KIND_RESPONSE=2;
-const CMD_PING=1,CMD_GET_INFO=2,CMD_GET_KEYBOARD_STATE=3,CMD_SWITCH_PROFILE=4,CMD_ENABLE_PAIRING=5,CMD_DISCONNECT=6,CMD_CLEAR_PROFILE=7,CMD_TYPE_TEXT=8,CMD_REBOOT_BOOTLOADER=9,CMD_GET_LOGS=10;
+const VID=0x1209,PID=0x0002,MAGIC=0x31524750,VERSION=5,HEADER=16,ENC=new TextEncoder(),DEC=new TextDecoder();
+const COMMAND=1,ERROR=5,GET_STATE=3,ACTIVATE_SLOT=4,CANCEL_PAIRING=5,SET_BLUETOOTH=6,CLEAR_SLOT=7,TYPE_TEXT=8,REBOOT=9,GET_LOGS=10,SET_NAME=11,SET_SLOT_NAME=12,FACTORY_RESET=13;
+const ERROR_TEXT={1:'Bad request',2:'Unsupported command',3:'Device busy or timed out',4:'Firmware update failed',5:'Keyboard is not ready or subscribed',6:'Text contains an unsupported character',7:'Bluetooth connection was lost',8:'Command queue is full'};
+const LINK=['Bluetooth off','Ready','Advertising','Waiting for pairing','Connecting','Connected','Disconnecting','Error'];
+const $=id=>document.getElementById(id);
+let device,iface,inEp,outEp,requestId=1,rx=new Uint8Array(),currentState=null,writeChain=Promise.resolve(),renamingSlot=null,eventRefresh=null,lastRevision=null;const pendingCalls=new Map();
 
-let d,iface,inEp,outEp,reqId=1,active=0,rx=[];
-const $=x=>document.getElementById(String(x).replace(/^#/,''));
-
-function log(text,kind=''){
-  let t=new Date().toTimeString().slice(0,8),e=document.createElement('div');
-  e.innerHTML='<span class="time">['+t+']</span> ';
-  let s=document.createElement('span');
-  s.className=kind;
-  s.textContent=text;
-  e.append(s);
-  $('log').append(e);
-  $('log').scrollTop=$('log').scrollHeight
+function appendLog(text,kind=''){
+  const row=document.createElement('div');row.className=kind;row.textContent=`${new Date().toLocaleTimeString()}  ${text}`;$('log').append(row);$('log').scrollTop=$('log').scrollHeight;
 }
-
-function setStatus(text,connected=false){
-  $('status').textContent=text;
-  $('status').className='state'+(connected?' on':'');
+function crc32(bytes){let c=~0;for(const b of bytes){c^=b;for(let n=0;n<8;n++)c=(c>>>1)^(c&1?0xedb88320:0)}return(~c)>>>0}
+function makeFrame(req,payload){const a=new Uint8Array(HEADER+payload.length),v=new DataView(a.buffer);v.setUint32(0,MAGIC,true);v.setUint8(4,VERSION);v.setUint8(5,COMMAND);v.setUint32(6,req,true);v.setUint16(10,payload.length,true);v.setUint32(12,crc32(payload),true);a.set(payload,HEADER);return a}
+function concat(a,b){const r=new Uint8Array(a.length+b.length);r.set(a);r.set(b,a.length);return r}
+async function receiveFrame(){
+  while(true){
+    if(rx.length>=HEADER){const v=new DataView(rx.buffer,rx.byteOffset,rx.byteLength),len=v.getUint16(10,true),total=HEADER+len;if(len>512)throw Error('Invalid response length');if(rx.length>=total){const raw=rx.slice(0,total);rx=rx.slice(total);const h=new DataView(raw.buffer);if(h.getUint32(0,true)!==MAGIC||h.getUint8(4)!==VERSION)throw Error('This control page is incompatible with the device protocol');const payload=raw.slice(HEADER);if(crc32(payload)!==h.getUint32(12,true))throw Error('Invalid response checksum');return{kind:h.getUint8(5),id:h.getUint32(6,true),payload}}}
+    const result=await device.transferIn(inEp,64);if(result.status!=='ok'||!result.data)throw Error('USB read failed');rx=concat(rx,new Uint8Array(result.data.buffer,result.data.byteOffset,result.data.byteLength));
+  }
 }
-
-function crc32(b){let c=~0;for(let i=0;i<b.length;i++){c^=b[i];for(let j=0;j<8;j++)c=(c>>>1)^(c&1?0xEDB88320:0)}return(~c)>>>0}
-function frame(kind,req,p=[]){if(p.length>512)throw Error('Protocol payload too large');let a=new Uint8Array(16+p.length);let v=new DataView(a.buffer);v.setUint32(0,PGR1,true);v.setUint8(4,1);v.setUint8(5,kind);v.setUint32(6,req,true);v.setUint16(10,p.length,true);v.setUint32(12,crc32(p),true);a.set(p,16);return a}
-
-async function recv(){
-  let r=await d.transferIn(inEp,64);if(r.status!=='ok'||r.data.byteLength<16)throw Error('Short WebUSB frame');
-  let v=r.data,kind=v.getUint8(5),req=v.getUint32(6,true),len=v.getUint16(10,true),crc=v.getUint32(12,true);
-  if(v.getUint32(0,true)!==PGR1||v.getUint8(4)!==1)throw Error('Bad protocol magic/version');
-  let p=new Uint8Array(r.data.buffer,r.data.byteOffset+16,len);
-  if(crc32(p)!==crc)throw Error('Bad response CRC');
-  return {kind,id:req,payload:p}
+function call(payload){const req=requestId++;return new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{pendingCalls.delete(req);reject(Error('Device response timeout'))},12000);pendingCalls.set(req,{resolve:value=>{clearTimeout(timeout);resolve(value)},reject:error=>{clearTimeout(timeout);reject(error)}});const send=async()=>{const result=await device.transferOut(outEp,makeFrame(req,payload));if(result.status!=='ok')throw Error('USB write failed')};writeChain=writeChain.then(send,send).catch(error=>{const pending=pendingCalls.get(req);pendingCalls.delete(req);pending?.reject(error)})})}
+async function readerLoop(){try{while(device?.opened){const answer=await receiveFrame();if(answer.kind===3){const overflow=answer.payload[0]===255,revision=answer.payload.length>=5?new DataView(answer.payload.buffer,answer.payload.byteOffset).getUint32(1,true):null,gap=revision!==null&&lastRevision!==null&&revision!==((lastRevision+1)>>>0);lastRevision=revision;clearTimeout(eventRefresh);eventRefresh=setTimeout(()=>refreshState(),overflow||gap?0:25);continue}const pending=pendingCalls.get(answer.id);if(!pending)continue;pendingCalls.delete(answer.id);const code=answer.payload[0];answer.kind===ERROR?pending.reject(Error(ERROR_TEXT[code]||`Device error ${code??'unknown'}`)):pending.resolve(answer.payload)}}catch(error){if(device){appendLog(error.message,'err');for(const pending of pendingCalls.values())pending.reject(error);pendingCalls.clear();disconnectUi()}}}
+function parseState(bytes){
+  if(bytes.length<10||bytes[0]!==5)throw Error('Unsupported state response');let offset=10;const readStrings=label=>{const values=[];for(let i=0;i<3;i++){if(offset>=bytes.length)throw Error(`Truncated ${label}`);const len=bytes[offset++];if(offset+len>bytes.length)throw Error(`Truncated ${label}`);values.push(DEC.decode(bytes.slice(offset,offset+len)));offset+=len}return values},names=readStrings('slot name'),addresses=readStrings('slot address');const baseLen=bytes[offset++];if(offset+baseLen>bytes.length)throw Error('Truncated device name');const baseName=DEC.decode(bytes.slice(offset,offset+baseLen));
+  return{enabled:!!bytes[1],link:bytes[2],active:bytes[3]===255?null:bytes[3],connected:bytes[4]===255?null:bytes[4],pairing:!!bytes[5],bonds:[!!bytes[6],!!bytes[7],!!bytes[8]],hidReady:!!bytes[9],names,addresses,baseName};
 }
-
-async function call(kind,p){
-  let req=reqId++;
-  for(let retry=0;retry<200;retry++){
-    let r=await d.transferOut(outEp,frame(kind,req,p));
-    if(r.status!=='ok')throw Error('USB write failed');
-    let busy=false;
-    for(let i=0;i<8;i++){
-      let answer=await recv();
-      if(answer.id!==req){log(`Ignoring stale WebUSB response ${answer.id}; expected ${req}`,'warnlog');continue}
-      if(answer.kind===5){if(kind===KIND_COMMAND&&p[0]===CMD_SWITCH_PROFILE&&answer.payload[0]===3){busy=true;break}throw Error(`Device error ${answer.payload[0]}`)}
-      return answer.payload
-    }
-    if(!busy)throw Error('No matching device response');
-    await new Promise(resolve=>setTimeout(resolve,20))
-  }
-  throw Error('Device remained busy')
+function setConnected(connected){$('usb_status').textContent=connected?'USB connected':'USB disconnected';$('usb_status').className='pill'+(connected?' on':'');$('connect').hidden=connected;$('disconnect').hidden=!connected;$('bluetooth_toggle').hidden=!connected;$('rename_device').hidden=!connected;for(const id of ['get_logs','reboot','factory_reset'])$(id).disabled=!connected;if(!connected){$('ble_status').textContent='Bluetooth unavailable';$('ble_status').className='pill';$('text').disabled=true;$('type').disabled=true;currentState=null;renderSlots()}}
+function stateText(state,slot){if(!state.enabled)return'Bluetooth off';if(state.connected===slot)return'Connected';if(state.active===slot&&state.pairing)return'Waiting for pairing';if(state.active===slot&&state.link===4)return'Connecting';if(state.active===slot&&state.bonds[slot])return'Saved · waiting';return state.bonds[slot]?'Saved':'Empty'}
+function renderSlots(){
+  const root=$('slots');root.replaceChildren();for(let slot=0;slot<3;slot++){const state=currentState,bonded=!!state?.bonds[slot],active=state?.active===slot,connected=state?.connected===slot,card=document.createElement('article');card.className='slot'+(active?' active':'')+(connected?' connected':'')+(active&&state?.pairing?' pairing':'')+(!bonded?' empty':'');const name=bonded?(state.names[slot]||state.addresses[slot]||'Unknown device'):'Empty slot',address=bonded?(state.addresses[slot]||'Unknown address'):'';card.innerHTML=`<div class="slot-top"><span class="slot-number">${escapeHtml(state?.baseName||'Pager')} ${slot+1}</span><span class="slot-state">${state?stateText(state,slot):'Unavailable'}</span></div><div class="slot-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div><div class="slot-address">${escapeHtml(address)}</div><div class="slot-actions"></div>`;const actions=card.querySelector('.slot-actions'),main=document.createElement('button');main.className='btn';main.disabled=!state||!state.enabled||(active&&bonded);main.textContent=bonded?(active?'Active':'Connect'):'Pair';main.onclick=()=>perform(`Activating slot ${slot+1}`,()=>call([ACTIVATE_SLOT,slot]));actions.append(main);if(bonded){const rename=document.createElement('button');rename.className='btn icon-btn ghost';rename.textContent='✎';rename.title='Rename paired device';rename.setAttribute('aria-label',`Rename slot ${slot+1}`);rename.onclick=()=>{renamingSlot=slot;$('slot_name_input').value=state.names[slot]||state.addresses[slot];$('slot_name_dialog').showModal();$('slot_name_input').focus()};actions.append(rename);const clear=document.createElement('button');clear.className='btn icon-btn ghost';clear.textContent='×';clear.title='Free slot';clear.setAttribute('aria-label',`Free slot ${slot+1}`);clear.onclick=async()=>{if(await askConfirm(`Free slot ${slot+1}`,`Delete the saved Bluetooth bond and alias for ${name}?`))perform(`Clearing slot ${slot+1}`,()=>call([CLEAR_SLOT,slot]))};actions.append(clear)}root.append(card)}
 }
-
-function enabled(v){['refresh','pair','disconnect','clear','type','reboot_bootloader','get_logs'].forEach(x=>$(x).disabled=!v)}
-
-async function state(){
-  let s=await call(KIND_COMMAND,[CMD_GET_KEYBOARD_STATE]);
-  active=s[0];
-  $('profiles').style.display='block';
-  $('profiles').textContent=`Active profile ${active+1}; pairing ${s[1]?'enabled':'disabled'}; bonds:${s.slice(2).map((v,i)=>` ${i+1}:${v?'yes':'empty'}`).join('')}`;
-  log(`State updated: Profile ${active+1}, pairing ${s[1]?'on':'off'}.`,'ok')
+function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function askConfirm(title,message){return new Promise(resolve=>{const dialog=$('confirm_dialog');$('confirm_title').textContent=title;$('confirm_message').textContent=message;dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();$('confirm_accept').focus()})}
+function renderState(state){
+  currentState=state;const label=state.link===5&&!state.hidReady?'Connected · waiting for keyboard subscription':LINK[state.link]||'Unknown';$('ble_status').textContent=label;$('ble_status').className='pill'+(state.hidReady?' on':state.link===3||state.link===4||state.link===5||state.link===6?' busy':'');$('device_hint').textContent=state.enabled?(state.active===null?`${state.baseName} is on. Choose a slot.`:`${state.baseName} ${state.active+1} is active.`):`${state.baseName} Bluetooth radio is off.`;$('bluetooth_toggle').textContent=state.enabled?'Turn Bluetooth off':'Turn Bluetooth on';$('bluetooth_toggle').disabled=false;$('rename_device').hidden=false;$('rename_device').disabled=false;$('cancel_pairing').hidden=!state.pairing;$('cancel_pairing').disabled=!state.pairing;$('text').disabled=!state.hidReady;$('type').disabled=!state.hidReady;renderSlots();
 }
+async function refreshState(){if(!device?.opened)return;try{renderState(parseState(await call([GET_STATE])))}catch(error){appendLog(error.message,'err');disconnectUi()}}
+function schedulePoll(){}
+async function perform(label,operation){try{appendLog(label);await operation();await refreshState();appendLog('Done','ok')}catch(error){appendLog(error.message,'err')}finally{schedulePoll()}}
+function disconnectUi(){clearTimeout(eventRefresh);setConnected(false);device=null;iface=inEp=outEp=undefined;rx=new Uint8Array();lastRevision=null}
+async function disconnectUsb(){const current=device,claimed=iface;device=null;try{if(current?.opened&&claimed!==undefined)await current.releaseInterface(claimed)}catch(_){}try{if(current?.opened)await current.close()}catch(_){}for(const pending of pendingCalls.values())pending.reject(Error('USB disconnected'));pendingCalls.clear();disconnectUi();appendLog('Disconnected from Pager','warn')}
 
-$('connect').onclick=async()=>{
-  try{
-    log('Requesting WebUSB device access…');
-    d=await navigator.usb.requestDevice({filters:[{vendorId:VID,productId:PID}]});
-    await d.open();
-    if(!d.configuration)await d.selectConfiguration(1);
-    for(const i of d.configuration.interfaces){
-      let a=i.alternate;
-      if(a.interfaceClass===255&&a.endpoints.some(e=>e.direction==='in')&&a.endpoints.some(e=>e.direction==='out')){
-        iface=i.interfaceNumber;
-        inEp=a.endpoints.find(e=>e.direction==='in').endpointNumber;
-        outEp=a.endpoints.find(e=>e.direction==='out').endpointNumber;
-        break
-      }
-    }
-    if(iface===undefined)throw Error('Pager WebUSB interface not found');
-    await d.claimInterface(iface);
-    enabled(true);
-    setStatus('connected',true);
-    log('Connected to Pager over WebUSB.','ok');
-    await state()
-  }catch(e){
-    setStatus('disconnected',false);
-    log(`Connect failed: ${e.message||e}`,'errlog')
-  }
-};
-
-$('refresh').onclick=()=>state().catch(e=>log(e.message,'errlog'));
-
-$('get_logs').onclick=async()=>{
-  try{
-    log('Fetching diagnostic logs from device...');
-    let res=await call(KIND_COMMAND,[CMD_GET_LOGS]);
-    let text=new TextDecoder().decode(res);
-    log(`=== Device Logs ===\n${text}`,'ok');
-  }catch(e){
-    log(`Get logs failed: ${e.message||e}`,'errlog');
-  }
-};
-
-$('reboot_bootloader').onclick=async()=>{
-  try{
-    log('Sending command to reboot device into Bootloader DFU mode...');
-    await call(KIND_COMMAND,[CMD_REBOOT_BOOTLOADER]);
-    setStatus('disconnected',false);
-    enabled(false);
-    log('Reboot command sent! Board is entering Pager Bootloader DFU mode.','ok');
-  }catch(e){
-    log(`Reboot to bootloader failed: ${e.message||e}`,'errlog')
-  }
-};
-
-$('pair').onclick=async()=>{
-  try{
-    await call(KIND_COMMAND,[CMD_ENABLE_PAIRING]);
-    log('Pairing mode enabled for active profile.','ok');
-    await state()
-  }catch(e){
-    log(`Pairing failed: ${e.message||e}`,'errlog')
-  }
-};
-
-$('disconnect').onclick=async()=>{
-  try{
-    await call(KIND_COMMAND,[CMD_DISCONNECT]);
-    log('BLE disconnect command sent.','ok')
-  }catch(e){
-    log(`Disconnect failed: ${e.message||e}`,'errlog')
-  }
-};
-
-$('clear').onclick=async()=>{
-  try{
-    await call(KIND_COMMAND,[CMD_CLEAR_PROFILE,active]);
-    log(`Cleared active profile ${active+1}.`,'ok');
-    await state()
-  }catch(e){
-    log(`Clear profile failed: ${e.message||e}`,'errlog')
-  }
-};
-
-$('type').onclick=async()=>{
-  try{
-    let val=$('text').value;
-    if(!val)return;
-    let t=ENC.encode(val);
-    await call(KIND_COMMAND,[CMD_TYPE_TEXT,...t]);
-    log(`Typed string (${val.length} chars) over HID.`,'ok');
-    $('text').value=''
-  }catch(e){
-    log(`Type string failed: ${e.message||e}`,'errlog')
-  }
-};
+$('connect').onclick=async()=>{try{device=await navigator.usb.requestDevice({filters:[{vendorId:VID,productId:PID}]});await device.open();if(!device.configuration)await device.selectConfiguration(1);for(const item of device.configuration.interfaces){const alt=item.alternate;if(alt.interfaceClass===255){const input=alt.endpoints.find(e=>e.direction==='in'),output=alt.endpoints.find(e=>e.direction==='out');if(input&&output){iface=item.interfaceNumber;inEp=input.endpointNumber;outEp=output.endpointNumber;break}}}if(iface===undefined)throw Error('Pager control interface not found');await device.claimInterface(iface);setConnected(true);appendLog('Connected to Pager','ok');readerLoop();await refreshState()}catch(error){appendLog(error.message,'err');disconnectUi()}};
+$('disconnect').onclick=disconnectUsb;
+navigator.usb?.addEventListener('disconnect',event=>{if(event.device===device){appendLog('Pager disconnected','warn');disconnectUi()}});
+$('bluetooth_toggle').onclick=()=>perform(currentState.enabled?'Turning Bluetooth off':'Turning Bluetooth on',()=>call([SET_BLUETOOTH,currentState.enabled?0:1]));
+$('cancel_pairing').onclick=()=>perform('Cancelling pairing',()=>call([CANCEL_PAIRING]));
+$('type').onclick=()=>{const text=$('text').value;if(!text)return;perform('Sending keyboard text',()=>call([TYPE_TEXT,...ENC.encode(text)])).then(()=>$('text').value='')};
+$('get_logs').onclick=async()=>{try{const text=DEC.decode(await call([GET_LOGS]));appendLog(text||'Device log is empty','ok')}catch(error){appendLog(error.message,'err')}};
+$('reboot').onclick=async()=>{if(await askConfirm('Reboot to bootloader','USB control will disconnect while Pager enters firmware update mode.'))perform('Rebooting to bootloader',()=>call([REBOOT]))};
+$('factory_reset').onclick=async()=>{if(await askConfirm('Factory reset','Erase all Bluetooth bonds, names and settings? This cannot be undone.'))perform('Restoring factory settings',()=>call([FACTORY_RESET]))};
+$('rename_device').onclick=()=>{$('rename_input').value=currentState?.baseName||'Pager';$('rename_dialog').showModal();$('rename_input').focus()};
+$('rename_save').onclick=event=>{event.preventDefault();const value=$('rename_input').value.trim(),encoded=ENC.encode(value);if(!value)return;if(encoded.length>24){appendLog('Base name must be at most 24 UTF-8 bytes','err');return}$('rename_dialog').close();perform('Renaming Pager',()=>call([SET_NAME,...encoded]))};
+$('slot_name_save').onclick=event=>{event.preventDefault();const value=$('slot_name_input').value.trim(),encoded=ENC.encode(value),slot=renamingSlot;if(slot===null||!value)return;if(encoded.length>32){appendLog('Slot name must be at most 32 UTF-8 bytes','err');return}$('slot_name_dialog').close();renamingSlot=null;perform(`Renaming slot ${slot+1}`,()=>call([SET_SLOT_NAME,slot,...encoded]))};
+renderSlots();
 </script>
+</body>
+</html>

@@ -1,5 +1,5 @@
 # Python dependencies for the pager integration test-suite and utility scripts.
 # Install with: pip3 install -r requirements.txt
-pytest>=8.0
-pyserial>=3.5
-bleak>=0.21
+pytest==9.1.1
+pyserial==3.5
+bleak==3.0.2

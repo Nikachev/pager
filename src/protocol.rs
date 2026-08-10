@@ -1,24 +1,18 @@
-#![allow(dead_code)]
-
-/// IEEE CRC-32 used by both OTA transports to detect corrupted staged data.
+/// IEEE CRC-32 used by the USB frame transport.
 pub const CRC32_INIT: u32 = 0xFFFF_FFFF;
-pub const PACKAGE_MAGIC: [u8; 8] = *b"PGRFW001";
-pub const MANIFEST_LEN: usize = 120;
-pub const MANIFEST_PAGE_SIZE: usize = 4096;
-
-/// Maximum raw application binary size (484 KiB).
-pub const MAX_IMAGE_SIZE: usize = 484 * 1024;
-/// Maximum signed package size including manifest page (488 KiB).
-pub const MAX_PACKAGE_SIZE: usize = MANIFEST_PAGE_SIZE + MAX_IMAGE_SIZE;
 
 /// Pager WebUSB framing, independent of the USB transport packet boundaries.
 ///
 /// Frames are `magic | version | kind | request_id | payload_len | crc32 |
 /// payload`, all integers little-endian. The CRC covers the payload only.
 pub const USB_FRAME_MAGIC: [u8; 4] = *b"PGR1";
-pub const USB_FRAME_VERSION: u8 = 1;
+pub mod spec {
+    include!(concat!(env!("OUT_DIR"), "/protocol_spec.rs"));
+}
+
+pub const USB_FRAME_VERSION: u8 = spec::FRAME_VERSION;
 pub const USB_FRAME_HEADER_LEN: usize = 16;
-pub const USB_MAX_PAYLOAD: usize = 512;
+pub const USB_MAX_PAYLOAD: usize = spec::MAX_PAYLOAD;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -76,15 +70,15 @@ pub fn parse_usb_frame(frame: &[u8]) -> Result<(UsbFrameHeader, &[u8]), UsbFrame
         return Err(UsbFrameError::UnsupportedVersion);
     }
     let kind = UsbFrameKind::try_from(frame[5]).map_err(|_| UsbFrameError::InvalidKind)?;
-    let request_id = u32::from_le_bytes(frame[6..10].try_into().unwrap());
-    let payload_len = u16::from_le_bytes(frame[10..12].try_into().unwrap()) as usize;
+    let request_id = u32::from_le_bytes([frame[6], frame[7], frame[8], frame[9]]);
+    let payload_len = u16::from_le_bytes([frame[10], frame[11]]) as usize;
     if payload_len > USB_MAX_PAYLOAD {
         return Err(UsbFrameError::PayloadTooLarge);
     }
     if frame.len() != USB_FRAME_HEADER_LEN + payload_len {
         return Err(UsbFrameError::LengthMismatch);
     }
-    let expected_crc = u32::from_le_bytes(frame[12..16].try_into().unwrap());
+    let expected_crc = u32::from_le_bytes([frame[12], frame[13], frame[14], frame[15]]);
     let payload = &frame[USB_FRAME_HEADER_LEN..];
     if crc32_finalize(crc32_update(CRC32_INIT, payload)) != expected_crc {
         return Err(UsbFrameError::BadCrc);
@@ -156,60 +150,6 @@ pub const fn crc32_finalize(crc: u32) -> u32 {
     !crc
 }
 
-/// Parse exactly eight lowercase/uppercase hexadecimal digits. This is used
-/// for the OTA checksum header and deliberately rejects prefixes and suffixes.
-pub fn parse_hex_u32(value: &[u8]) -> Option<u32> {
-    if value.len() != 8 {
-        return None;
-    }
-    value.iter().try_fold(0u32, |result, byte| {
-        let digit = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return None,
-        };
-        Some((result << 4) | u32::from(digit))
-    })
-}
-
-/// Validate transport-visible package structure before rebooting into the
-/// bootloader. Signature validation remains the bootloader's responsibility.
-pub fn valid_package_envelope(
-    manifest_page: &[u8],
-    package_len: usize,
-    expected_slot: u32,
-    max_package_len: usize,
-) -> bool {
-    if manifest_page.len() != MANIFEST_PAGE_SIZE
-        || package_len <= MANIFEST_PAGE_SIZE
-        || package_len > max_package_len
-    {
-        return false;
-    }
-    let state = u32::from_le_bytes(match manifest_page[0..4].try_into() {
-        Ok(value) => value,
-        Err(_) => return false,
-    });
-    let image_len = u32::from_le_bytes(match manifest_page[16..20].try_into() {
-        Ok(value) => value,
-        Err(_) => return false,
-    }) as usize;
-    let target_slot = u32::from_le_bytes(match manifest_page[20..24].try_into() {
-        Ok(value) => value,
-        Err(_) => return false,
-    });
-    state == u32::MAX
-        && manifest_page[4..12] == PACKAGE_MAGIC
-        && target_slot == expected_slot
-        && image_len > 0
-        && image_len <= max_package_len - MANIFEST_PAGE_SIZE
-        && package_len == MANIFEST_PAGE_SIZE + image_len
-        && manifest_page[MANIFEST_LEN..]
-            .iter()
-            .all(|byte| *byte == 0xFF)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,13 +159,6 @@ mod tests {
         let crc = crc32_update(CRC32_INIT, b"1234");
         let crc = crc32_update(crc, b"56789");
         assert_eq!(crc32_finalize(crc), 0xCBF4_3926);
-    }
-
-    #[test]
-    fn checksum_parser_is_exact() {
-        assert_eq!(parse_hex_u32(b"deadBEEF"), Some(0xDEAD_BEEF));
-        assert_eq!(parse_hex_u32(b"deadbeef!"), None);
-        assert_eq!(parse_hex_u32(b"0xdeadbeef"), None);
     }
 
     #[test]
@@ -241,30 +174,26 @@ mod tests {
     }
 
     #[test]
-    fn manifest_validation_rejects_wrong_slot_and_dirty_padding() {
-        let mut page = [0xFF; MANIFEST_PAGE_SIZE];
-        page[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
-        page[4..12].copy_from_slice(&PACKAGE_MAGIC);
-        page[16..20].copy_from_slice(&4u32.to_le_bytes());
-        page[20..24].copy_from_slice(&1u32.to_le_bytes());
-        assert!(valid_package_envelope(
-            &page,
-            MANIFEST_PAGE_SIZE + 4,
-            1,
-            500_000
-        ));
-        assert!(!valid_package_envelope(
-            &page,
-            MANIFEST_PAGE_SIZE + 4,
-            0,
-            500_000
-        ));
-        page[MANIFEST_LEN] = 0;
-        assert!(!valid_package_envelope(
-            &page,
-            MANIFEST_PAGE_SIZE + 4,
-            1,
-            500_000
-        ));
+    fn framing_round_trips_payload_boundaries_and_request_ids() {
+        let mut payload = [0u8; USB_MAX_PAYLOAD];
+        let mut frame = [0u8; USB_FRAME_HEADER_LEN + USB_MAX_PAYLOAD];
+        for len in [0, 1, 2, 15, 16, 63, 64, 255, 256, USB_MAX_PAYLOAD] {
+            for (index, byte) in payload[..len].iter_mut().enumerate() {
+                *byte = (index as u8).wrapping_mul(37).wrapping_add(len as u8);
+            }
+            for request_id in [0, 1, 0x7fff_ffff, u32::MAX] {
+                let encoded = encode_usb_frame(
+                    &mut frame,
+                    UsbFrameKind::Command,
+                    request_id,
+                    &payload[..len],
+                )
+                .unwrap();
+                let (header, decoded) = parse_usb_frame(&frame[..encoded]).unwrap();
+                assert_eq!(header.request_id, request_id);
+                assert_eq!(header.payload_len, len);
+                assert_eq!(decoded, &payload[..len]);
+            }
+        }
     }
 }

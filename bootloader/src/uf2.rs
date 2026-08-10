@@ -28,6 +28,11 @@ pub struct Uf2Block {
 }
 
 impl Uf2Block {
+    pub fn has_magic(buf: &[u8; 512]) -> bool {
+        u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) == UF2_MAGIC_START0
+            && u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]) == UF2_MAGIC_START1
+    }
+
     pub fn parse(buf: &[u8; 512]) -> Option<Self> {
         let block: Uf2Block = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const Uf2Block) };
         if block.magic_start0 == UF2_MAGIC_START0

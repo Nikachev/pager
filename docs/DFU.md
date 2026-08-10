@@ -1,119 +1,35 @@
-# Single-Slot Secure UF2 Bootloader Architecture (nRF52840)
+# Signed single-slot UF2 update
 
-This document provides a comprehensive technical reference for the **Pager Single-Slot Secure UF2 Bootloader**, memory layout, cryptographic signature verification, Double-Tap reset mechanism, and USB Mass Storage (MSC / SCSI Bulk-Only Transport) DFU flashing protocol.
+The 1 MiB flash layout comes only from `layout.json`: a 48 KiB bootloader,
+application partition beginning at `0x0000C000`, and two protected 4 KiB storage
+pages at `0x000FE000`. The first 256 bytes of the application partition hold the
+`PGRFW002` manifest; the vector table begins at `0x0000C100`.
 
----
+The 112-byte manifest contains magic, numeric version, image length, SHA-256
+digest and Ed25519 signature. The signed message is the first 48 bytes (everything
+except the signature). The remainder of the 256-byte manifest area is `0xFF`.
 
-## 💾 1. Flash Memory Layout
+The bootloader accepts 512-byte UF2 sectors carrying 256 payload bytes. It checks
+all magic values, nRF52840 family ID, block count/index, address, payload length,
+alignment and partition bounds with checked arithmetic. Blocks may arrive in any
+order and identical duplicates are allowed; conflicting duplicates fail. A
+bitmap tracks unique blocks. The final image digest and manifest signature are
+verified before completion, and reset is delayed until the successful USB status
+has been returned. Unknown or malformed SCSI commands return a failed CSW and an
+appropriate sense code.
 
-The nRF52840 has 1 MB (1,048,576 bytes) of internal Flash split into 256 pages of 4,096 bytes (4 KB) each.
+The volume is `PAGER_BOOT` (current temporary USB identity `239A:0029`). Copy only
+`dist/pager.uf2`. `tools/flash_uf2.py` treats neither an I/O error nor early
+unmount as success: it waits for the application identity `1209:0002` afterward.
+Persistent storage is outside the UF2 range and survives an ordinary update.
+An inherited application watchdog is detected and every enabled reload register
+is fed while DFU is active. A bootloader panic/HardFault records a retention
+reason before reset and enters DFU with the four-long-blink fault code.
 
-```
-0x0000_0000 +---------------------------------------+ Page 0
-            | Bootloader Binary (48 KiB)            |
-            | Pages 0..11                           |
-0x0000_C000 +---------------------------------------+ Page 12 (FIRMWARE_START)
-            | Manifest Header (256 Bytes)          |
-            | Magic: "PGRFW001"                     |
-            | Ed25519 Signature + SHA-256 Digest    |
-0x0000_C100 +---------------------------------------+ (Main Application VTOR Alignment)
-            | Main Application (`pager`)            |
-            | Pages 12..253 (903.75 KiB)            |
-0x000F_E000 +---------------------------------------+ Page 254
-            | Protected NVM Storage (8 KiB)         |
-            | Pages 254..255                        |
-0x0010_0000 +---------------------------------------+ End of Flash (1 MB)
-```
-
----
-
-## 🔑 2. Cryptographic Manifest & Secure Boot Protocol
-
-Every valid application firmware image is prefixed by a 256-byte Manifest Header at address `0x0000_C000`.
-
-### Manifest Header Structure (`ManifestHeader`)
-```rust
-#[repr(C, packed)]
-pub struct ManifestHeader {
-    pub state: u32,         // 0xFFFFFFFF (STATE_PENDING)
-    pub magic: [u8; 8],     // b"PGRFW001"
-    pub version: u32,       // Monotonic Version (1, 2, ...)
-    pub image_len: u32,     // Size of raw application binary payload (bytes)
-    pub target_slot: u32,   // Reserved (0)
-    pub digest: [u8; 32],   // SHA-256 Digest of raw application payload
-    pub signature: [u8; 64], // Ed25519 Digital Signature
-}
-```
-
-### Signature Verification Algorithm
-1. The 52-byte signed message is constructed as:
-   `magic (8B) + version (4B) + image_len (4B) + target_slot (4B) + digest (32B)`
-2. The bootloader validates the Ed25519 signature of `signed_message` against trusted public key(s) in `public_key.rs`.
-3. The SHA-256 digest of the application payload (`0x0000_C100 .. 0x0000_C100 + image_len`) is computed and compared against `manifest.digest`.
-4. If signature or digest validation fails, execution is halted in DFU mode with LED diagnostic pattern `[3 short blinks] + [2 long blinks]`.
-
----
-
-## 🔘 3. Double-Tap Reset Mechanism
-
-To allow manual user entry into DFU mode without a software command:
-- The bootloader checks the hardware reset reason register `NRF_POWER_RESETREAS` (`0x4000_0400`). Cold power-on resets and software resets skip the 500 ms delay and boot directly into the main application.
-- On physical pin resets (Reset button press), the bootloader sets a magic flag (`0xA5`) in `NRF_POWER_GPREGRET` (`0x4000_051C`) and opens a **500 ms** window for a second tap.
-- If a second pin reset occurs within **500 ms**, the double-tap flag is confirmed and DFU mode is entered.
-- When double-tap is detected, the bootloader stays in DFU mode and blinks `[3 short blinks]` (User Request).
-
----
-
-## ⚡ 4. USB Mass Storage (MSC) UF2 DFU Protocol
-
-The bootloader exposes a standard **USB Mass Storage Class Interface** (`bInterfaceClass = 0x08`, SCSI Transparent Command Set `0x06`, Bulk-Only Transport `0x50`) on Endpoint `0x01` (OUT) and Endpoint `0x81` (IN).
-
-### Flashing Sequence
-1. Host script (`tools/flash_uf2.py` or `make flash`) sends SCSI `WRITE (10)` command wrappers (CBW) containing 512-byte UF2 blocks to the USB Mass Storage interface.
-2. **Block 0 (Manifest Header)**:
-   - Received in RAM via SCSI WRITE command.
-   - Ed25519 signature is verified against trusted public keys in RAM.
-   - Page 0 of application Flash (`0x0000_C000`) is erased and Block 0 payload written.
-   - Bootloader responds with SCSI CSW Command Status Passed (0x00).
-3. **Blocks 1..N (Payload)**:
-   - Received in 512-byte SCSI blocks, written to Flash sequentially.
-   - Bootloader responds with CSW Passed for each block.
-4. **Final Block**:
-   - SHA-256 digest of all flashed application blocks is verified.
-   - Bootloader issues `SCB::sys_reset()`.
-   - Bootloader reboots, validates Flash, sets `SCB->VTOR = 0x0000_C100`, and jumps into main application `pager`.
-
----
-
-## 🛠️ 5. Commands Summary
-
-```bash
-# Build bootloader & signed firmware UF2
+```sh
 make build
-
-# Flash firmware over USB Mass Storage
-python3 tools/flash_uf2.py --file dist/pager.uf2
-
-# Flash via SWD Probe (probe-rs)
-make flash-swd
+make flash
+make flash-swd       # recovery and bootloader replacement
 ```
 
----
-
-## 🧪 6. Local Verification Workflow
-
-All code validation, lint checks, unit tests, and build verification are performed locally on developer workstations (without external CI runners):
-
-```bash
-# Run host unit tests (manifest packing, Ed25519 signature verification)
-cargo test --target aarch64-apple-darwin --package xtask
-
-# Run linter checks
-cargo clippy --target thumbv7em-none-eabihf -- -D warnings
-
-# Build release bootloader & signed main firmware UF2
-make build
-
-# Run automated software DFU reboot & USB Mass Storage enumeration test on hardware
-python3 tools/test_dfu_reboot.py
-```
+Dev/release trust and downgrade behavior are documented in `SECURITY.md`.

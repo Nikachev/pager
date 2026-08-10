@@ -7,6 +7,7 @@
 const DFU_MAGIC: u8 = 0xB1;
 /// 8-bit magic for double-tap window detection
 const DBL_TAP_MAGIC: u8 = 0xA5;
+const FAULT_MAGIC: u8 = 0xE1;
 const NRF_POWER_GPREGRET: *mut u32 = 0x4000_051C as *mut u32;
 const NRF_POWER_RESETREAS: *mut u32 = 0x4000_0400 as *mut u32;
 
@@ -39,4 +40,18 @@ pub fn check_and_set_double_tap() -> bool {
 
 pub fn clear_double_tap() {
     unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
+}
+
+pub fn mark_fault() {
+    unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, FAULT_MAGIC as u32) };
+}
+
+pub fn take_fault() -> bool {
+    let value = unsafe { core::ptr::read_volatile(NRF_POWER_GPREGRET) } as u8;
+    if value == FAULT_MAGIC {
+        unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
+        true
+    } else {
+        false
+    }
 }

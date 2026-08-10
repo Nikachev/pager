@@ -5,7 +5,6 @@ Pytest configuration and shared fixtures for pager device integration tests.
 import os
 import sys
 import tempfile
-import fcntl
 import pytest
 from common import find_serial_port
 
@@ -48,22 +47,24 @@ def pytest_collection_modifyitems(config, items):
     ))
 
 @pytest.fixture(scope="session", autouse=True)
-def lock_hardware_device():
+def lock_hardware_device(request):
     """Ensure only one Pytest process interacts with the physical hardware at a time."""
+    if not request.config.getoption("--run-hil"):
+        yield
+        return
     try:
-        lock_fd = open(LOCK_FILE, "w")
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, IOError):
+        lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(lock_fd, str(os.getpid()).encode())
+    except FileExistsError:
         pytest.exit("[-] Error: Another HIL test process is already running on the physical device. Concurrent runs are forbidden.", returncode=1)
 
     yield
 
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()
+        os.close(lock_fd)
         if os.path.exists(LOCK_FILE):
             os.remove(LOCK_FILE)
-    except Exception:
+    except OSError:
         pass
 
 @pytest.fixture(scope="session")

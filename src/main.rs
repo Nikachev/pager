@@ -1,6 +1,12 @@
 #![no_std]
 #![no_main]
 
+#[cfg(any(
+    all(feature = "board-nice-nano-v2", feature = "board-xiao-nrf52840"),
+    not(any(feature = "board-nice-nano-v2", feature = "board-xiao-nrf52840"))
+))]
+compile_error!("select exactly one Pager board feature");
+
 mod ble;
 mod flash;
 mod led;
@@ -9,6 +15,8 @@ mod serial_task;
 mod usb_detach;
 mod webusb;
 mod webusb_task;
+
+pub use pager::layout;
 
 pub use led::{blink_task, LED_MODE};
 pub use serial_task::{usb_logger_task, usb_receiver_task};
@@ -141,8 +149,9 @@ fn build_sdc<'d, const N: usize>(
     mem: &'d mut sdc::Mem<N>,
 ) -> Result<nrf_sdc::SoftdeviceController<'d>, nrf_sdc::Error> {
     sdc::Builder::new()?
-        .support_adv()
+        .support_ext_adv()
         .support_peripheral()
+        .adv_count(3)?
         .peripheral_count(1)?
         .buffer_cfg(
             DefaultPacketPool::MTU as u16,
@@ -153,8 +162,8 @@ fn build_sdc<'d, const N: usize>(
         .build(p, rng, mpsl, mem)
 }
 
-pub const USB_VENDOR_ID: u16 = 0x1209;
-pub const USB_PRODUCT_ID: u16 = 0x0002;
+pub const USB_VENDOR_ID: u16 = protocol::spec::APPLICATION_VID;
+pub const USB_PRODUCT_ID: u16 = protocol::spec::APPLICATION_PID;
 pub const USB_MANUFACTURER: &str = "Nikachev";
 pub const USB_PRODUCT_NAME: &str = "Pager WebUSB+ACM";
 
@@ -166,7 +175,7 @@ fn factory_usb_serial() -> heapless::String<16> {
     serial
 }
 
-fn ble_static_random_address() -> [u8; 6] {
+fn ble_static_random_address(active_profile: Option<usize>) -> [u8; 6] {
     let low = pac::FICR.deviceaddr(0).read();
     let high = pac::FICR.deviceaddr(1).read();
     let mut addr = [
@@ -178,7 +187,17 @@ fn ble_static_random_address() -> [u8; 6] {
         ((high >> 8) & 0xFF) as u8,
     ];
     addr[5] |= 0xC0;
+    addr[0] ^= active_profile.map(|slot| slot as u8 + 1).unwrap_or(0);
     addr
+}
+
+fn advertised_device_name(base: &str, active_profile: Option<usize>) -> heapless::String<32> {
+    let mut name = heapless::String::new();
+    let _ = name.push_str(if base.is_empty() { "Pager" } else { base });
+    if let Some(slot) = active_profile {
+        let _ = core::fmt::write(&mut name, format_args!(" {}", slot + 1));
+    }
+    name
 }
 
 #[embassy_executor::task]
@@ -200,17 +219,75 @@ async fn heartbeat_task() -> ! {
 async fn persist_keyboard_state_task(
     flash_mutex: &'static Mutex<ThreadModeRawMutex, nrf_mpsl::Flash<'static>>,
 ) -> ! {
-    loop {
-        ble::PERSIST_STATE.wait().await;
-        let (active_profile, bonds) = ble::KEYBOARD_STATE.lock(|state| {
-            let state = state.borrow();
-            (state.active_profile, state.bonds.clone())
-        });
+    let mut cursor = {
         let mut flash = flash_mutex.lock().await;
-        match flash::save_persistent_state(&mut *flash, active_profile, &bonds).await {
-            Ok(()) => {}
+        flash::scan_storage_cursor(&mut *flash).await
+    };
+    loop {
+        let persist_sequence = ble::PERSIST_STATE.wait().await;
+        let (active_profile, bluetooth_enabled, bonds, cccd_flags, slot_names, device_name) =
+            ble::KEYBOARD_STATE.lock(|state| {
+                let state = state.borrow();
+                (
+                    state.active_profile,
+                    state.bluetooth_enabled,
+                    state.bonds.clone(),
+                    state.cccd_flags,
+                    state.slot_names.clone(),
+                    state.device_name.clone(),
+                )
+            });
+        let mut flash = flash_mutex.lock().await;
+        match flash::save_persistent_state_cached(
+            &mut *flash,
+            &mut cursor,
+            active_profile,
+            bluetooth_enabled,
+            &bonds,
+            &cccd_flags,
+            &slot_names,
+            &device_name,
+        )
+        .await
+        {
+            Ok(()) => {
+                ble::publish_state_changed();
+                ble::PERSIST_DONE.signal((persist_sequence, true));
+            }
             Err(error) => {
                 log_msg!("PERSIST_STATE:ERROR:{:?}", error);
+                let persisted = flash::load_persistent_state(&mut *flash).await;
+                cursor = flash::scan_storage_cursor(&mut *flash).await;
+                ble::KEYBOARD_STATE.lock(|state| {
+                    let mut state = state.borrow_mut();
+                    if let Some(persisted) = persisted {
+                        state.active_profile = persisted.active_profile;
+                        state.bluetooth_enabled = persisted.bluetooth_enabled;
+                        state.bonds = persisted.bonds;
+                        state.cccd_flags = persisted.cccd_flags;
+                        state.slot_names = persisted.slot_names;
+                        state.device_name = persisted.device_name;
+                    } else {
+                        state.active_profile = None;
+                        state.bluetooth_enabled = false;
+                        state.bonds = [None, None, None];
+                        state.cccd_flags = [0; 3];
+                        state.slot_names = Default::default();
+                        state.device_name.clear();
+                        let _ = state.device_name.push_str("Pager");
+                    }
+                    state.connected_profile = None;
+                    state.pairing_mode = false;
+                    state.fast_advertising = false;
+                    state.hid_ready = false;
+                    state.link_state = if state.bluetooth_enabled {
+                        ble::BleLinkState::Idle
+                    } else {
+                        ble::BleLinkState::BluetoothOff
+                    };
+                });
+                ble::publish_state_changed();
+                ble::PERSIST_DONE.signal((persist_sequence, false));
             }
         }
     }
@@ -228,11 +305,77 @@ fn sync_active_bond<C: Controller>(stack: &trouble_host::Stack<'_, C, DefaultPac
     }
     let active_bond = ble::KEYBOARD_STATE.lock(|state| {
         let state = state.borrow();
-        state.bonds[state.active_profile].clone()
+        state
+            .active_profile
+            .and_then(|slot| state.bonds[slot].clone())
     });
     if let Some(bond) = active_bond {
         if stack.add_bond_information(bond).is_err() {
             crate::log_msg!("BLE:BOND_SYNC_ERROR");
+        }
+    }
+}
+
+fn store_unique_bond(state: &mut ble::KeyboardState, slot: usize, bond: BondInformation) {
+    let same_identity = state.bonds[slot]
+        .as_ref()
+        .is_some_and(|existing| existing.identity.match_identity(&bond.identity));
+    for other in 0..state.bonds.len() {
+        if other != slot
+            && state.bonds[other]
+                .as_ref()
+                .is_some_and(|existing| existing.identity.match_identity(&bond.identity))
+        {
+            state.bonds[other] = None;
+            state.cccd_flags[other] = 0;
+            state.slot_names[other].clear();
+        }
+    }
+    if !same_identity || state.slot_names[slot].is_empty() {
+        state.slot_names[slot] = ble::format_default_peer_name(bond.identity.addr.addr.raw());
+    }
+    state.bonds[slot] = Some(bond);
+}
+
+fn remove_duplicate_bonds(state: &mut ble::KeyboardState) -> bool {
+    let mut changed = false;
+    for slot in 0..state.bonds.len() {
+        let Some(identity) = state.bonds[slot].as_ref().map(|bond| bond.identity) else {
+            continue;
+        };
+        for duplicate in slot + 1..state.bonds.len() {
+            if state.bonds[duplicate]
+                .as_ref()
+                .is_some_and(|bond| bond.identity.match_identity(&identity))
+            {
+                state.bonds[duplicate] = None;
+                state.cccd_flags[duplicate] = 0;
+                state.slot_names[duplicate].clear();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn apply_ble_control_command(command: &ble::BleCommand) -> bool {
+    let handled = ble::KEYBOARD_STATE.lock(|state| state.borrow_mut().reduce(command));
+    if handled {
+        ble::publish_state_changed();
+    }
+    handled
+}
+
+fn is_ble_control_noop(command: &ble::BleCommand) -> bool {
+    ble::KEYBOARD_STATE.lock(|state| state.borrow().is_noop(command))
+}
+
+async fn finish_ble_control_command(sequence: u32) {
+    loop {
+        let (completed, persisted) = ble::PERSIST_DONE.wait().await;
+        if completed.wrapping_sub(sequence) < 0x8000_0000 {
+            ble::BLE_CONTROL_RESULT.signal(if persisted { 0 } else { 1 });
+            return;
         }
     }
 }
@@ -272,7 +415,10 @@ async fn main(spawner: Spawner) {
     unwrap!(nrf_mpsl::Hfclk::wait().await);
     core::mem::forget(hfclk);
 
+    #[cfg(feature = "board-nice-nano-v2")]
     let led = Output::new(p.P0_15, Level::High, OutputDrive::Standard);
+    #[cfg(feature = "board-xiao-nrf52840")]
+    let led = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
     spawner.spawn(unwrap!(blink_task(led)));
 
     let flash_driver = nrf_mpsl::Flash::take(mpsl, p.NVMC);
@@ -283,59 +429,48 @@ async fn main(spawner: Spawner) {
     {
         let mut flash = flash_mutex.lock().await;
         let persistent = crate::flash::load_persistent_state(&mut *flash).await;
-        let bonds = persistent.map(|(_, b)| b).unwrap_or_default();
-        crate::ble::KEYBOARD_STATE.lock(|state| {
+        let duplicates_removed = crate::ble::KEYBOARD_STATE.lock(|state| {
             let mut s = state.borrow_mut();
-            s.active_profile = 0;
-            s.bonds = bonds;
+            if let Some(persistent) = persistent {
+                s.active_profile = persistent.active_profile;
+                s.bluetooth_enabled = persistent.bluetooth_enabled;
+                s.link_state = if persistent.bluetooth_enabled {
+                    crate::ble::BleLinkState::Idle
+                } else {
+                    crate::ble::BleLinkState::BluetoothOff
+                };
+                s.bonds = persistent.bonds;
+                s.cccd_flags = persistent.cccd_flags;
+                s.slot_names = persistent.slot_names;
+                s.device_name = persistent.device_name;
+                // Pairing is deliberately not persistent. If reset interrupted
+                // pairing for an empty active slot, recover to Bluetooth Off;
+                // otherwise a failing radio path could trap USB in a reboot loop.
+                if s.bluetooth_enabled
+                    && s.active_profile.is_some_and(|slot| s.bonds[slot].is_none())
+                {
+                    s.bluetooth_enabled = false;
+                    s.active_profile = None;
+                    s.pairing_mode = false;
+                    s.link_state = crate::ble::BleLinkState::BluetoothOff;
+                }
+                let duplicates_removed = remove_duplicate_bonds(&mut s);
+                if s.device_name.is_empty() {
+                    let default_name = crate::ble::default_device_name();
+                    let _ = s.device_name.push_str(default_name.as_str());
+                }
+                duplicates_removed
+            } else {
+                false
+            }
         });
+        if duplicates_removed {
+            crate::ble::request_persist();
+        }
     }
 
-    let sdc_p = sdc::Peripherals::new(
-        p.PPI_CH17, p.PPI_CH18, p.PPI_CH20, p.PPI_CH21, p.PPI_CH22, p.PPI_CH23, p.PPI_CH24,
-        p.PPI_CH25, p.PPI_CH26, p.PPI_CH27, p.PPI_CH28, p.PPI_CH29,
-    );
     let mut rng = rng::Rng::new(p.RNG, Irqs);
-    let mut sdc_mem = sdc::Mem::<4720>::new();
-    let sdc = unwrap!(build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem));
-
-    let address = Address::random(ble_static_random_address());
-    info!("Pager HID: our address = {:?}", address);
-
-    let mut resources: HostResources<DefaultPacketPool, 1, 2> = HostResources::new();
-    let stack = trouble_host::new(sdc, &mut resources)
-        .set_random_address(address)
-        .build();
-    sync_active_bond(&stack);
-    let mut runner = stack.runner();
-    let mut peripheral = stack.peripheral();
-
-    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
-        name: "Pager",
-        appearance: &appearance::human_interface_device::GENERIC_HUMAN_INTERFACE_DEVICE,
-    }))
-    .unwrap();
-    server.register_discovery_services();
-
-    let mut adv_data = [0u8; 31];
-    let len = AdStructure::encode_slice(
-        &[
-            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::CompleteServiceUuids16(&[[0x12, 0x18]]),
-            AdStructure::CompleteServiceUuids128(&[[
-                0x8a, 0x12, 0xd7, 0xba, 0x46, 0x77, 0x30, 0xad, 0xe8, 0x46, 0x3e, 0x0b, 0x01, 0x00,
-                0x7a, 0x9e,
-            ]]),
-        ],
-        &mut adv_data[..],
-    )
-    .unwrap();
-    let mut scan_data = [0u8; 31];
-    let scan_len = AdStructure::encode_slice(
-        &[AdStructure::CompleteLocalName(b"Pager")],
-        &mut scan_data[..],
-    )
-    .unwrap();
+    let mut sdc_mem = sdc::Mem::<8192>::new();
 
     pac::USBD
         .usbpullup()
@@ -410,192 +545,662 @@ async fn main(spawner: Spawner) {
     spawner.spawn(unwrap!(persist_keyboard_state_task(flash_mutex)));
     spawner.spawn(unwrap!(heartbeat_task()));
 
-    info!("Pager HID & Web Server: starting advertising");
-    let _ = embassy_futures::join::join(runner.run(), async {
-        loop {
-            crate::log_msg!("BLE:ADVERTISING");
+    // Characteristic values generated by Trouble use one-shot StaticCell
+    // storage. The GATT database therefore belongs to the firmware uptime, not
+    // to a replaceable radio/controller session.
+    let server = match Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: "Pager",
+        appearance: &appearance::human_interface_device::KEYBOARD,
+    })) {
+        Ok(server) => server,
+        Err(error) => {
+            crate::log_msg!("BLE:GATT_CONFIG_ERROR:{}", error);
+            loop {
+                crate::signal_heartbeat(crate::HEARTBEAT_BLE);
+                Timer::after(Duration::from_secs(1)).await;
+            }
+        }
+    };
+
+    info!("Pager HID & Web Server: supervisor started");
+    loop {
+        let bluetooth_enabled = ble::KEYBOARD_STATE.lock(|state| state.borrow().bluetooth_enabled);
+        if !bluetooth_enabled {
             crate::signal_heartbeat(crate::HEARTBEAT_BLE);
-            let advertiser = match peripheral
-                .advertise(
-                    &Default::default(),
-                    Advertisement::ConnectableScannableUndirected {
-                        adv_data: &adv_data[..len],
-                        scan_data: &scan_data[..scan_len],
-                    },
-                )
-                .await
-            {
-                Ok(advertiser) => advertiser,
-                Err(error) => {
-                    crate::log_msg!("BLE:ADVERTISE_ERROR:{:?}", error);
+            let command = ble::BLE_COMMANDS.receive().await;
+            if is_ble_control_noop(&command) {
+                ble::BLE_CONTROL_RESULT.signal(0);
+                continue;
+            }
+            if apply_ble_control_command(&command) {
+                let sequence = ble::request_persist();
+                finish_ble_control_command(sequence).await;
+            }
+            continue;
+        }
+
+        // The SDC peripheral tokens are logically returned when
+        // SoftdeviceController::drop() calls sdc_disable(). Embassy's singleton
+        // token API cannot express that dynamic lifecycle, so the supervisor
+        // reacquires these disjoint PPI tokens only after the preceding
+        // controller and stack have been dropped.
+        let sdc_p = unsafe {
+            sdc::Peripherals::new(
+                embassy_nrf::peripherals::PPI_CH17::steal(),
+                embassy_nrf::peripherals::PPI_CH18::steal(),
+                embassy_nrf::peripherals::PPI_CH20::steal(),
+                embassy_nrf::peripherals::PPI_CH21::steal(),
+                embassy_nrf::peripherals::PPI_CH22::steal(),
+                embassy_nrf::peripherals::PPI_CH23::steal(),
+                embassy_nrf::peripherals::PPI_CH24::steal(),
+                embassy_nrf::peripherals::PPI_CH25::steal(),
+                embassy_nrf::peripherals::PPI_CH26::steal(),
+                embassy_nrf::peripherals::PPI_CH27::steal(),
+                embassy_nrf::peripherals::PPI_CH28::steal(),
+                embassy_nrf::peripherals::PPI_CH29::steal(),
+            )
+        };
+        let sdc = match build_sdc(sdc_p, &mut rng, mpsl, &mut sdc_mem) {
+            Ok(controller) => controller,
+            Err(error) => {
+                crate::log_msg!("BLE:CONTROLLER_START_ERROR:{:?}", error);
+                Timer::after(Duration::from_millis(250)).await;
+                continue;
+            }
+        };
+        let mut radio_profile =
+            crate::ble::KEYBOARD_STATE.lock(|state| state.borrow().active_profile);
+        let address = Address::random(ble_static_random_address(radio_profile));
+        crate::log_msg!("BLE:CONTROLLER_STARTED:{:?}", address);
+
+        let mut resources: HostResources<DefaultPacketPool, 1, 2, 3> = HostResources::new();
+        let stack = trouble_host::new(sdc, &mut resources)
+            .set_random_address(address)
+            .build();
+        sync_active_bond(&stack);
+        let mut runner = stack.runner();
+        let mut peripheral = stack.peripheral();
+        let mut prepared_profiles = [false; 3];
+        let session = async {
+            loop {
+                crate::signal_heartbeat(crate::HEARTBEAT_BLE);
+
+                // The outer loop only runs without an active connection. Updating
+                // the Security Manager here prevents a slot switch from removing
+                // the old bond while its link is still being torn down.
+                sync_active_bond(&stack);
+
+                let (bluetooth_enabled, active_profile, pairing_mode, fast_advertising, peer) =
+                    ble::KEYBOARD_STATE.lock(|state| {
+                        let state = state.borrow();
+                        let peer = state
+                            .active_profile
+                            .and_then(|slot| state.bonds[slot].as_ref())
+                            .map(|bond| bond.identity.addr);
+                        (
+                            state.bluetooth_enabled,
+                            state.active_profile,
+                            state.pairing_mode,
+                            state.fast_advertising,
+                            peer,
+                        )
+                    });
+
+                if active_profile != radio_profile {
+                    radio_profile = active_profile;
+                    crate::log_msg!("BLE:ACTIVE_ADVERTISING_SET_CHANGED");
                     Timer::after(Duration::from_secs(1)).await;
                     continue;
                 }
-            };
-            info!("Pager: waiting for connection...");
-            let conn = match embassy_futures::select::select(
-                advertiser.accept(),
-                ble::BLE_COMMANDS.receive(),
-            )
-            .await
-            {
-                Either::First(Ok(conn)) => conn,
-                Either::First(Err(error)) => {
-                    crate::log_msg!("BLE:ACCEPT_ERROR:{:?}", error);
-                    continue;
-                }
-                Either::Second(ble::BleCommand::SyncActiveBond) => {
-                    sync_active_bond(&stack);
-                    continue;
-                }
-                Either::Second(_) => continue,
-            };
-            let pairing_mode = ble::KEYBOARD_STATE.lock(|state| state.borrow().pairing_mode);
-            let _ = conn.set_bondable(pairing_mode);
-            let conn = match conn.with_attribute_server(&server) {
-                Ok(conn) => conn,
-                Err(error) => {
-                    crate::log_msg!("BLE:GATT_SERVER_ERROR:{:?}", error);
-                    continue;
-                }
-            };
-            info!("Pager: connection established!");
-            crate::log_msg!("BLE:CONNECTED");
 
-            let mut status = 0u8;
-            let mut persist_after_disconnect = false;
-            loop {
-                match embassy_futures::select::select3(
-                    conn.next(),
+                if !bluetooth_enabled
+                    || active_profile.is_none()
+                    || (peer.is_none() && !pairing_mode)
+                {
+                    ble::KEYBOARD_STATE.lock(|state| {
+                        let mut state = state.borrow_mut();
+                        state.link_state = if state.bluetooth_enabled {
+                            ble::BleLinkState::Idle
+                        } else {
+                            ble::BleLinkState::BluetoothOff
+                        };
+                    });
+                    let command = ble::BLE_COMMANDS.receive().await;
+                    if is_ble_control_noop(&command) {
+                        ble::BLE_CONTROL_RESULT.signal(0);
+                        continue;
+                    }
+                    if apply_ble_control_command(&command) {
+                        let sequence = ble::request_persist();
+                        finish_ble_control_command(sequence).await;
+                    }
+                    continue;
+                }
+
+                crate::log_msg!("BLE:ADVERTISING");
+                ble::KEYBOARD_STATE.lock(|state| {
+                    let mut state = state.borrow_mut();
+                    state.link_state = if state.pairing_mode {
+                        ble::BleLinkState::Pairing
+                    } else {
+                        ble::BleLinkState::Advertising
+                    };
+                });
+                let mut adv_data = [0u8; 31];
+                let flags = if pairing_mode {
+                    LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED
+                } else {
+                    BR_EDR_NOT_SUPPORTED
+                };
+                let len = match AdStructure::encode_slice(
+                    &[
+                        AdStructure::Flags(flags),
+                        AdStructure::CompleteServiceUuids16(&[[0x12, 0x18], [0x0f, 0x18]]),
+                    ],
+                    &mut adv_data[..],
+                ) {
+                    Ok(len) => len,
+                    Err(error) => {
+                        crate::log_msg!("BLE:ADV_DATA_ERROR:{:?}", error);
+                        Timer::after(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                let mut scan_data = [0u8; 31];
+                // Hosts using BLE privacy reconnect from rotating private addresses.
+                // Directed advertising to the stored identity address prevents those
+                // reconnects on macOS and Android. Keep only the active slot's bond in
+                // the resolving list and advertise undirected so that host-side HID
+                // reconnection can discover Pager normally.
+                let runtime_name = ble::KEYBOARD_STATE.lock(|state| {
+                    advertised_device_name(&state.borrow().device_name, active_profile)
+                });
+                stack.set_runtime_local_address(Address::random(ble_static_random_address(
+                    active_profile,
+                )));
+                let scan_len = match AdStructure::encode_slice(
+                    &[AdStructure::CompleteLocalName(runtime_name.as_bytes())],
+                    &mut scan_data[..],
+                ) {
+                    Ok(len) => len,
+                    Err(error) => {
+                        crate::log_msg!("BLE:SCAN_DATA_ERROR:{:?}", error);
+                        Timer::after(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+                let advertisement = Advertisement::ConnectableScannableUndirected {
+                    adv_data: &adv_data[..len],
+                    scan_data: &scan_data[..scan_len],
+                };
+                let mut advertisement_params = AdvertisementParameters::default();
+                let phase_timeout = if pairing_mode {
+                    advertisement_params.interval_min = Duration::from_millis(50);
+                    advertisement_params.interval_max = Duration::from_millis(80);
+                    Duration::from_secs(120)
+                } else if fast_advertising {
+                    advertisement_params.interval_min = Duration::from_millis(50);
+                    advertisement_params.interval_max = Duration::from_millis(80);
+                    Duration::from_secs(10)
+                } else if !pairing_mode && peer.is_some() {
+                    advertisement_params.interval_min = Duration::from_secs(1);
+                    advertisement_params.interval_max = Duration::from_millis(1200);
+                    Duration::from_secs(3600)
+                } else {
+                    Duration::from_secs(3600)
+                };
+                let Some(profile) = active_profile else {
+                    crate::log_msg!("BLE:ADVERTISE_WITHOUT_ACTIVE_SLOT");
+                    continue;
+                };
+                let advertiser_result = if prepared_profiles[profile] {
+                    peripheral
+                        .advertise_ext_prepared(profile as u8, &advertisement_params)
+                        .await
+                } else {
+                    let sets = [AdvertisementSet {
+                        params: advertisement_params,
+                        data: advertisement,
+                        address: Some(BdAddr::new(ble_static_random_address(active_profile))),
+                    }];
+                    let mut handles = AdvertisementSet::handles(&sets);
+                    peripheral
+                        .advertise_ext_from_handle(profile as u8, &sets, &mut handles)
+                        .await
+                };
+                let advertiser = match advertiser_result {
+                    Ok(advertiser) => advertiser,
+                    Err(error) => {
+                        crate::log_msg!("BLE:ADVERTISE_ERROR:{:?}", error);
+                        Timer::after(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+                prepared_profiles[profile] = true;
+                info!("Pager: waiting for connection...");
+                let conn = match embassy_futures::select::select3(
+                    advertiser.accept(),
                     ble::BLE_COMMANDS.receive(),
-                    Timer::after(Duration::from_secs(1)),
+                    Timer::after(phase_timeout),
                 )
                 .await
                 {
-                    Either3::First(event) => match event {
-                        GattConnectionEvent::Disconnected { reason } => {
-                            info!("Pager: disconnected {:?}", reason);
-                            crate::log_msg!("BLE:DISCONNECTED:{:?}", reason);
-                            break;
+                    Either3::First(Ok(conn)) => conn,
+                    Either3::First(Err(error)) => {
+                        crate::log_msg!("BLE:ACCEPT_ERROR:{:?}", error);
+                        continue;
+                    }
+                    Either3::Second(command) => {
+                        if is_ble_control_noop(&command) {
+                            ble::BLE_CONTROL_RESULT.signal(0);
+                            continue;
                         }
-                        GattConnectionEvent::PairingComplete {
-                            security_level,
-                            bond,
-                        } => {
-                            info!(
-                                "Pager: pairing complete! Level: {:?}, Bond: {:?}",
-                                security_level, bond
-                            );
-                            crate::ble::KEYBOARD_STATE.lock(|state| {
-                                let mut state = state.borrow_mut();
-                                let active_profile = state.active_profile;
-                                state.bonds[active_profile] = bond.clone();
-                                state.pairing_mode = false;
-                            });
-                            persist_after_disconnect = true;
+                        if apply_ble_control_command(&command) {
+                            let sequence = ble::request_persist();
+                            finish_ble_control_command(sequence).await;
                         }
-                        GattConnectionEvent::PairingFailed(err) => {
-                            warn!("Pager: pairing failed: {:?}", err);
-                        }
-                        GattConnectionEvent::Gatt { event } => {
-                            match &event {
-                                GattEvent::Write(req) => {
-                                    if let Ok(mode) = req.value(&server.custom_service.led) {
-                                        if mode <= 2 {
-                                            LED_MODE.signal(mode);
-                                            info!("BLE LED mode set to {}", mode);
-                                        } else {
-                                            warn!("Ignoring invalid BLE LED mode {}", mode);
-                                        }
-                                    }
-                                }
-                                GattEvent::NotAllowed(req) => {
-                                    crate::log_msg!("BLE:GATT_NOT_ALLOWED:handle={}", req.handle());
-                                }
-                                _ => {}
-                            }
-                            match event.accept() {
-                                Ok(reply) => {
-                                    reply.send().await;
-                                }
-                                Err(_) => crate::log_msg!("BLE:GATT_ACCEPT_ERROR"),
-                            }
-                        }
-                        _ => {}
-                    },
-                    Either3::Second(command) => match command {
-                        ble::BleCommand::SyncActiveBond => sync_active_bond(&stack),
-                        ble::BleCommand::TypeString(text) => {
-                            let mode = server
-                                .hid_service
-                                .protocol_mode
-                                .get(&server)
-                                .unwrap_or(1);
-                            for ch in text.chars() {
-                                let Some((modifier, keycode)) = ble::ascii_to_hid(ch) else {
-                                    continue;
-                                };
-                                let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
-                                let release = [0u8; 8];
-                                let send_res = if mode == 0 {
-                                    server
-                                        .hid_service
-                                        .boot_input_keyboard
-                                        .notify(&conn, &report, true)
-                                        .await
-                                } else {
-                                    server
-                                        .hid_service
-                                        .input_keyboard
-                                        .notify(&conn, &report, true)
-                                        .await
-                                };
-                                if send_res.is_err() {
-                                    break;
-                                }
-                                Timer::after(Duration::from_millis(8)).await;
-                                let release_res = if mode == 0 {
-                                    server
-                                        .hid_service
-                                        .boot_input_keyboard
-                                        .notify(&conn, &release, true)
-                                        .await
-                                } else {
-                                    server
-                                        .hid_service
-                                        .input_keyboard
-                                        .notify(&conn, &release, true)
-                                        .await
-                                };
-                                if release_res.is_err() {
-                                    break;
-                                }
-                                Timer::after(Duration::from_millis(8)).await;
-                            }
-                        }
-                        ble::BleCommand::Disconnect => {
-                            crate::log_msg!("BLE:COMMAND_DISCONNECT");
-                            break;
-                        }
-                        ble::BleCommand::RestartAdvertising => {
-                            crate::log_msg!("BLE:COMMAND_RESTART_ADVERTISING");
-                            break;
-                        }
-                    },
+                        continue;
+                    }
                     Either3::Third(()) => {
-                        status = status.wrapping_add(1);
-                        let _ = server
-                            .custom_service
-                            .status
-                            .notify(&conn, &status, false)
-                            .await;
+                        if pairing_mode {
+                            ble::KEYBOARD_STATE.lock(|state| {
+                                let mut state = state.borrow_mut();
+                                state.bluetooth_enabled = false;
+                                state.active_profile = None;
+                                state.connected_profile = None;
+                                state.hid_ready = false;
+                                state.pairing_mode = false;
+                                state.fast_advertising = false;
+                                state.link_state = ble::BleLinkState::BluetoothOff;
+                            });
+                            ble::publish_state_changed();
+                            ble::request_persist();
+                        } else if fast_advertising {
+                            ble::KEYBOARD_STATE.lock(|state| {
+                                state.borrow_mut().fast_advertising = false;
+                            });
+                        }
+                        continue;
+                    }
+                };
+                ble::KEYBOARD_STATE.lock(|state| {
+                    state.borrow_mut().link_state = ble::BleLinkState::Connecting;
+                });
+                ble::publish_state_changed();
+                let Some(connection_profile) = active_profile else {
+                    crate::log_msg!("BLE:CONNECTION_WITHOUT_ACTIVE_SLOT");
+                    conn.disconnect();
+                    continue;
+                };
+                let pairing_mode = ble::KEYBOARD_STATE.lock(|state| state.borrow().pairing_mode);
+                let _ = conn.set_bondable(pairing_mode);
+                let active_bond = ble::KEYBOARD_STATE
+                    .lock(|state| state.borrow().bonds[connection_profile].clone());
+                if let Some(ref bond) = active_bond {
+                    if conn.peer_identity() != bond.identity {
+                        crate::log_msg!("BLE:REJECT_NON_ACTIVE_PEER");
+                        conn.disconnect();
+                        continue;
+                    }
+                    if let Err(error) = conn.request_security() {
+                        crate::log_msg!("BLE:SECURITY_REQUEST_ERROR:{:?}", error);
+                    } else {
+                        crate::log_msg!("BLE:SECURITY_REQUESTED");
                     }
                 }
+                let conn = match conn.with_attribute_server(&server) {
+                    Ok(conn) => conn,
+                    Err(error) => {
+                        crate::log_msg!("BLE:GATT_SERVER_ERROR:{:?}", error);
+                        continue;
+                    }
+                };
+                let (cccd_flags, healed_cccd) = ble::KEYBOARD_STATE.lock(|state| {
+                    let mut state = state.borrow_mut();
+                    let previous = state.cccd_flags[connection_profile];
+                    let healed = ble::bonded_hid_cccd_flags(
+                        state.bonds[connection_profile].is_some(),
+                        previous,
+                    );
+                    state.cccd_flags[connection_profile] = healed;
+                    (healed, healed != previous)
+                });
+                if healed_cccd {
+                    crate::log_msg!("BLE:HEALED_BONDED_HID_CCCD");
+                    ble::request_persist();
+                }
+                if cccd_flags != 0 {
+                    if let Some(mut table) = server.get_client_att_table(conn.raw()) {
+                        for (flag, handle) in [
+                            (1, server.hid_service.input_keyboard.cccd_handle),
+                            (2, server.hid_service.boot_input_keyboard.cccd_handle),
+                            (4, server.battery_service.level.cccd_handle),
+                        ] {
+                            if cccd_flags & flag != 0 {
+                                if let Some(handle) = handle {
+                                    let _ = table.write(handle, 0, &[1, 0]);
+                                }
+                            }
+                        }
+                        server.set_client_att_table(conn.raw(), &table.view());
+                    }
+                }
+                info!("Pager: connection established!");
+                crate::log_msg!("BLE:CONNECTED");
+                ble::KEYBOARD_STATE.lock(|state| {
+                    state.borrow_mut().link_state = ble::BleLinkState::Connecting;
+                });
+
+                let mut persist_after_disconnect = false;
+                loop {
+                    match embassy_futures::select::select3(
+                        conn.next(),
+                        ble::BLE_COMMANDS.receive(),
+                        Timer::after(Duration::from_secs(1)),
+                    )
+                    .await
+                    {
+                        Either3::First(event) => match event {
+                            GattConnectionEvent::Disconnected { reason } => {
+                                info!("Pager: disconnected {:?}", reason);
+                                crate::log_msg!("BLE:DISCONNECTED:{:?}", reason);
+                                if let Some(table) = server.get_client_att_table(conn.raw()) {
+                                    let mut flags = 0;
+                                    for (flag, handle) in [
+                                        (1, server.hid_service.input_keyboard.cccd_handle),
+                                        (2, server.hid_service.boot_input_keyboard.cccd_handle),
+                                        (4, server.battery_service.level.cccd_handle),
+                                    ] {
+                                        if handle.and_then(|handle| table.get(handle)).is_some_and(
+                                            |value| {
+                                                value.len() >= 2
+                                                    && u16::from_le_bytes([value[0], value[1]]) != 0
+                                            },
+                                        ) {
+                                            flags |= flag;
+                                        }
+                                    }
+                                    ble::KEYBOARD_STATE.lock(|state| {
+                                        state.borrow_mut().cccd_flags[connection_profile] = flags;
+                                    });
+                                    crate::ble::request_persist();
+                                }
+                                ble::KEYBOARD_STATE.lock(|state| {
+                                    let mut state = state.borrow_mut();
+                                    state.connected_profile = None;
+                                    state.hid_ready = false;
+                                    state.link_state = if !state.bluetooth_enabled {
+                                        ble::BleLinkState::BluetoothOff
+                                    } else if state.active_profile.is_some() {
+                                        if state.pairing_mode {
+                                            ble::BleLinkState::Pairing
+                                        } else {
+                                            ble::BleLinkState::Advertising
+                                        }
+                                    } else {
+                                        ble::BleLinkState::Idle
+                                    };
+                                });
+                                ble::publish_state_changed();
+                                break;
+                            }
+                            GattConnectionEvent::PairingComplete {
+                                security_level,
+                                bond,
+                            } => {
+                                info!(
+                                    "Pager: pairing complete! Level: {:?}, Bond: {:?}",
+                                    security_level, bond
+                                );
+                                crate::ble::KEYBOARD_STATE.lock(|state| {
+                                    let mut state = state.borrow_mut();
+                                    if let Some(bond) = bond.clone() {
+                                        store_unique_bond(&mut state, connection_profile, bond);
+                                        state.pairing_mode = false;
+                                        state.connected_profile = Some(connection_profile);
+                                        state.link_state = ble::BleLinkState::Connected;
+                                    } else {
+                                        // A PairingComplete event without a bond must
+                                        // never erase an already persisted slot.
+                                        state.connected_profile = Some(connection_profile);
+                                        state.link_state = ble::BleLinkState::Connected;
+                                    }
+                                });
+                                ble::publish_state_changed();
+                                persist_after_disconnect = true;
+                                crate::ble::request_persist();
+                            }
+                            GattConnectionEvent::PairingFailed(err) => {
+                                warn!("Pager: pairing failed: {:?}", err);
+                            }
+                            GattConnectionEvent::Encrypted {
+                                security_level,
+                                bond,
+                            } => {
+                                info!(
+                                    "Pager: connection encrypted! Level: {:?}, Bond: {:?}",
+                                    security_level, bond
+                                );
+                                crate::ble::KEYBOARD_STATE.lock(|state| {
+                                    let mut state = state.borrow_mut();
+                                    if let Some(ref b) = bond {
+                                        store_unique_bond(
+                                            &mut state,
+                                            connection_profile,
+                                            b.clone(),
+                                        );
+                                    }
+                                    state.pairing_mode = false;
+                                    state.connected_profile = Some(connection_profile);
+                                    state.link_state = ble::BleLinkState::Connected;
+                                });
+                                ble::publish_state_changed();
+                                persist_after_disconnect = true;
+                                crate::ble::request_persist();
+                            }
+                            GattConnectionEvent::Gatt { event } => {
+                                if let GattEvent::NotAllowed(req) = &event {
+                                    crate::log_msg!("BLE:GATT_NOT_ALLOWED:handle={}", req.handle());
+                                }
+                                match event.accept() {
+                                    Ok(reply) => {
+                                        reply.send().await;
+                                    }
+                                    Err(_) => crate::log_msg!("BLE:GATT_ACCEPT_ERROR"),
+                                }
+                            }
+                            _ => {}
+                        },
+                        Either3::Second(command) => match command {
+                            ble::BleCommand::TypeString(text) => {
+                                let mode =
+                                    server.hid_service.protocol_mode.get(&server).unwrap_or(1);
+                                let mut result = 0;
+                                for ch in text.chars() {
+                                    let Some((modifier, keycode)) = ble::ascii_to_hid(ch) else {
+                                        result = 2;
+                                        break;
+                                    };
+                                    let report = [modifier, 0, keycode, 0, 0, 0, 0, 0];
+                                    let release = [0u8; 8];
+                                    let send_res = if mode == 0 {
+                                        server
+                                            .hid_service
+                                            .boot_input_keyboard
+                                            .notify(&conn, &report, true)
+                                            .await
+                                    } else {
+                                        server
+                                            .hid_service
+                                            .input_keyboard
+                                            .notify(&conn, &report, true)
+                                            .await
+                                    };
+                                    if send_res.is_err() {
+                                        result = 3;
+                                        break;
+                                    }
+                                    Timer::after(Duration::from_millis(12)).await;
+                                    let release_res = if mode == 0 {
+                                        server
+                                            .hid_service
+                                            .boot_input_keyboard
+                                            .notify(&conn, &release, true)
+                                            .await
+                                    } else {
+                                        server
+                                            .hid_service
+                                            .input_keyboard
+                                            .notify(&conn, &release, true)
+                                            .await
+                                    };
+                                    if release_res.is_err() {
+                                        result = 3;
+                                        break;
+                                    }
+                                    Timer::after(Duration::from_millis(12)).await;
+                                }
+                                ble::BLE_CONTROL_RESULT.signal(result);
+                            }
+                            command => {
+                                if is_ble_control_noop(&command) {
+                                    ble::BLE_CONTROL_RESULT.signal(0);
+                                    continue;
+                                }
+                                let disconnect_required = ble::KEYBOARD_STATE.lock(|state| {
+                                    let state = state.borrow();
+                                    !matches!(command, ble::BleCommand::SetSlotName(_, _))
+                                        && !matches!(
+                                            command,
+                                            ble::BleCommand::ClearSlot(slot)
+                                                if state.active_profile != Some(slot)
+                                        )
+                                });
+                                if disconnect_required {
+                                    ble::KEYBOARD_STATE.lock(|state| {
+                                        state.borrow_mut().link_state =
+                                            ble::BleLinkState::Disconnecting;
+                                    });
+                                    ble::publish_state_changed();
+                                }
+                                if let Some(table) = server.get_client_att_table(conn.raw()) {
+                                    let mut flags = 0;
+                                    for (flag, handle) in [
+                                        (1, server.hid_service.input_keyboard.cccd_handle),
+                                        (2, server.hid_service.boot_input_keyboard.cccd_handle),
+                                        (4, server.battery_service.level.cccd_handle),
+                                    ] {
+                                        if handle.and_then(|handle| table.get(handle)).is_some_and(
+                                            |value| {
+                                                value.len() >= 2
+                                                    && u16::from_le_bytes([value[0], value[1]]) != 0
+                                            },
+                                        ) {
+                                            flags |= flag;
+                                        }
+                                    }
+                                    ble::KEYBOARD_STATE.lock(|state| {
+                                        state.borrow_mut().cccd_flags[connection_profile] = flags;
+                                    });
+                                }
+                                let handled = apply_ble_control_command(&command);
+                                if handled {
+                                    let sequence = ble::request_persist();
+                                    finish_ble_control_command(sequence).await;
+                                }
+                                if disconnect_required {
+                                    conn.raw().disconnect();
+                                    // `disconnect()` only queues the HCI command. Keep polling the
+                                    // connection until Disconnection Complete is consumed; merely
+                                    // polling `is_connected()` does not drive the per-connection
+                                    // event queue in trouble-host.
+                                    loop {
+                                        crate::signal_heartbeat(crate::HEARTBEAT_BLE);
+                                        match embassy_futures::select::select(
+                                            conn.next(),
+                                            Timer::after(Duration::from_secs(3)),
+                                        )
+                                        .await
+                                        {
+                                            Either::First(GattConnectionEvent::Disconnected {
+                                                reason,
+                                            }) => {
+                                                crate::log_msg!(
+                                                    "BLE:DISCONNECTED_FOR_SLOT_SWITCH:{:?}",
+                                                    reason
+                                                );
+                                                // Nordic SDC can assert if a new connectable
+                                                // advertiser/controller session starts in the
+                                                // immediate tail of Disconnection Complete.
+                                                // Keep USB responsive while the radio settles.
+                                                Timer::after(Duration::from_secs(2)).await;
+                                                break;
+                                            }
+                                            Either::First(GattConnectionEvent::Gatt { event }) => {
+                                                if let Ok(reply) = event.accept() {
+                                                    reply.send().await;
+                                                }
+                                            }
+                                            Either::First(_) => {}
+                                            Either::Second(()) => {
+                                                crate::log_msg!("BLE:DISCONNECT_TIMEOUT");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        },
+                        Either3::Third(()) => {
+                            let ready =
+                                server
+                                    .get_client_att_table(conn.raw())
+                                    .is_some_and(|table| {
+                                        [
+                                            server.hid_service.input_keyboard.cccd_handle,
+                                            server.hid_service.boot_input_keyboard.cccd_handle,
+                                        ]
+                                        .into_iter()
+                                        .flatten()
+                                        .any(|handle| {
+                                            table.get(handle).is_some_and(|value| {
+                                                value.len() >= 2
+                                                    && u16::from_le_bytes([value[0], value[1]]) != 0
+                                            })
+                                        })
+                                    });
+                            let changed = ble::KEYBOARD_STATE.lock(|state| {
+                                let mut state = state.borrow_mut();
+                                let changed = state.hid_ready != ready;
+                                state.hid_ready = ready;
+                                changed
+                            });
+                            if changed {
+                                ble::publish_state_changed();
+                            }
+                        }
+                    }
+                }
+                if persist_after_disconnect {
+                    ble::request_persist();
+                }
             }
-            if persist_after_disconnect {
-                ble::PERSIST_STATE.signal(());
-            }
+        };
+
+        match embassy_futures::select::select(runner.run(), session).await {
+            Either::First(_) => crate::log_msg!("BLE:RUNNER_STOPPED"),
+            Either::Second(()) => crate::log_msg!("BLE:SESSION_STOPPED"),
         }
-    })
-    .await;
+        // Drop order matters: handles/futures, Stack/HostState, then the SDC
+        // controller owned by Stack. USB is driven by separate spawned tasks.
+        drop(stack);
+        crate::log_msg!("BLE:CONTROLLER_STOPPED");
+        // SDC may assert when a new connectable advertiser is started in the
+        // immediate tail of controller shutdown. USB continues running while
+        // the radio/controller settle.
+        Timer::after(Duration::from_secs(2)).await;
+    }
 }

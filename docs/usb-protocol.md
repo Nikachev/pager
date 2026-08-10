@@ -1,80 +1,60 @@
-# Pager USB protocol v1
+# Pager USB protocol v5
 
-Pager exposes a vendor-specific WebUSB bulk interface (`0xFF`) alongside CDC-ACM serial for logs and emergency DFU recovery. Host applications claim the vendor interface and communicate via bulk endpoints.
-
-> [!NOTE]
-> All build tooling, WebUSB interfaces, Python scripts, and hardware HIL tests are target-bound to **macOS** and executed strictly locally (no remote CI/CD pipelines).
-
-## Frame Structure
-
-All frames are little-endian and can span multiple USB transfers.
+Pager exposes a vendor WebUSB bulk interface alongside CDC-ACM diagnostics.
+Integers are little-endian and frames may span USB transfers.
 
 | Offset | Size | Field |
 | --- | ---: | --- |
-| 0 | 4 | ASCII `PGR1` |
-| 4 | 1 | Protocol version (`1`) |
-| 5 | 1 | Kind: command `1`, response `2`, event `3`, error `5` |
-| 6 | 4 | Request ID; zero for unsolicited events/errors |
-| 10 | 2 | Payload length, maximum 512 |
+| 0 | 4 | `PGR1` |
+| 4 | 1 | protocol version `5` |
+| 5 | 1 | command `1`, response `2`, event `3`, error `5` |
+| 6 | 4 | request ID; zero for events |
+| 10 | 2 | payload length, at most 512 |
 | 12 | 4 | IEEE CRC-32 of payload |
-| 16 | n | Payload |
+| 16 | n | payload |
 
-The device rejects an invalid header, version, length, kind, or CRC.
+Responses preserve the request ID. Events may be interleaved with responses, so
+clients need one continuous reader and a request map rather than one read per
+write. Error payload codes are bad request `1`, unsupported command `2`, busy or
+timeout `3`, DFU failure `4`, HID not ready/subscribed `5`, unsupported character
+`6`, connection lost `7`, and command queue full `8`.
 
-## Error Kinds & Error Codes
+## Commands
 
-When `kind` is `5` (`Error`), the single-byte error payload indicates:
-- `1`: `ERR_BAD_REQUEST` — Malformed frame header or invalid parameters
-- `2`: `ERR_UNSUPPORTED_COMMAND` — Unknown opcode
-- `3`: `ERR_BUSY` — Resource currently locked or busy
-- `4`: `ERR_DFU` — Bootloader reboot or flashing failed
+| Opcode | Command | Payload / result |
+| ---: | --- | --- |
+| 1 | `PING` | returns `PONG` |
+| 2 | `GET_INFO` | protocol, boot model and build version |
+| 3 | `GET_STATE` | schema below |
+| 4 | `ACTIVATE_SLOT` | slot `0..2`; empty slot starts pairing |
+| 5 | `CANCEL_PAIRING` | persistent Bluetooth Off |
+| 6 | `SET_BLUETOOTH_ENABLED` | boolean; leaves no active slot |
+| 7 | `CLEAR_SLOT` | slot; separate from subsequent pairing |
+| 8 | `TYPE_TEXT` | up to 256 supported ASCII bytes; one job at a time |
+| 9 | `REBOOT_TO_BOOTLOADER` | persists, replies, detaches USB, resets |
+| 10 | `GET_LOGS` | bounded diagnostic history |
+| 11 | `SET_DEVICE_NAME` | non-empty UTF-8, at most 24 bytes |
+| 12 | `SET_SLOT_NAME` | occupied slot + non-empty UTF-8, at most 32 bytes |
+| 13 | `FACTORY_RESET` | clears every bond/setting and returns Bluetooth Off |
 
-## Control Commands
+Mutating success is sent only after durable persistence. `TYPE_TEXT` success is
+sent after all press/release reports complete. Slot switching, pairing and device
+renaming do not reset USB.
 
-Command payloads contain a one-byte opcode followed by parameters:
+## State schema 5
 
-| Opcode | Name | Description / Payload | Response Payload |
-| ---: | --- | --- | --- |
-| `1` | `PING` | Health check | ASCII `PONG` |
-| `2` | `GET_INFO` | Device metadata | ASCII `Pager;protocol=1` |
-| `3` | `GET_KEYBOARD_STATE` | Get active slot & bonds | `active_slot, pairing_mode, bonded0, bonded1, bonded2` |
-| `4, slot` | `SWITCH_PROFILE` | Switch active BLE profile (0–2) | status byte (`0`) |
-| `5` | `ENABLE_PAIRING` | Enter BLE pairing mode | status byte (`0`) |
-| `6` | `DISCONNECT` | Disconnect active BLE client | status byte (`0`) |
-| `7, slot` | `CLEAR_PROFILE` | Clear bond on profile (0–2) | status byte (`0`) |
-| `8, utf8…` | `TYPE_TEXT` | Emulate keyboard typing (max 128B) | status byte (`0`) |
-| `9` | `REBOOT_TO_BOOTLOADER` | Trigger GPREGRET double-tap & reboot | ASCII `BOOTLOADER` (followed by USB detach & reset) |
-| `10` | `GET_LOGS` | Retrieve last 32 diagnostic log entries | UTF-8 newline-separated log string |
+The first ten bytes are: schema `5`, Bluetooth enabled, link state, active slot,
+connected slot, pairing flag, three occupied flags, and `HidReady`. Missing slots
+use `0xFF`. Link states are BluetoothOff `0`, Idle `1`, Advertising `2`, Pairing
+`3`, Connecting `4`, Connected `5`, Disconnecting `6`.
 
-## DFU Sequence Workflow
+They are followed by three length-prefixed aliases, three length-prefixed peer
+MAC addresses, and the length-prefixed common Pager name. A newly paired alias is
+its MAC address. Advertising names are `<name> 1`, `<name> 2`, `<name> 3`.
 
-Firmware updates use the **Single-Slot USB Mass Storage UF2 Bootloader**:
+Event payload `1 + revision:u32` means state changed. Payload starting with
+`0xFF` means event overflow. On connection, overflow, or a revision gap the client
+must fetch a complete `GET_STATE` snapshot.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Host as Host Client (python3 tools/flash_uf2.py)
-    participant App as Main Application (pager)
-    participant Boot as UF2 MSC Bootloader
-
-    Host->>App: Send Command Opcode 9 (REBOOT_TO_BOOTLOADER)
-    Note over App: Detach USB Pullups<br/>Set GPREGRET double-tap flag<br/>Issue ARM NVIC System Reset
-    App-->>Boot: Hardware Reset into Bootloader
-    Note over Boot: Detect GPREGRET double-tap<br/>Enumerate as USB Mass Storage (0x08)
-
-    loop 512-Byte UF2 Chunk Streaming over SCSI WRITE (10)
-        Host->>Boot: Send SCSI WRITE (10) CBW + 512B UF2 Block
-        Note over Boot: Block 0: Verify Ed25519 Signature<br/>Blocks 1..N: Program Flash sequentially
-        Boot-->>Host: SCSI CSW Command Passed Status
-    end
-
-    Note over Boot: Final Block: Verify SHA-256 Digest<br/>Issue System Reset
-    Boot-->>App: Reboot into updated firmware
-```
-
-## Memory Layout Summary
-
-- **Bootloader**: `0x0000_0000` – `0x0000_BFFF` (48 KiB)
-- **Manifest Header**: `0x0000_C000` – `0x0000_C0FF` (256 B)
-- **Main Application**: `0x0000_C100` – `0x000F_DFFF` (903.75 KiB)
-- **Storage & Bonds**: `0x000F_E000` – `0x000F_FFFF` (8 KiB)
+CDC remains a diagnostic/recovery interface; WebUSB v5 is the canonical control
+protocol. Old opcodes and old frame versions are intentionally unsupported.

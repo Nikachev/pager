@@ -3,6 +3,12 @@
 #![no_std]
 #![no_main]
 
+#[cfg(any(
+    all(feature = "board-nice-nano-v2", feature = "board-xiao-nrf52840"),
+    not(any(feature = "board-nice-nano-v2", feature = "board-xiao-nrf52840"))
+))]
+compile_error!("select exactly one Pager board feature");
+
 mod double_tap;
 mod fat16;
 mod led;
@@ -16,11 +22,12 @@ mod uf2;
 use cortex_m_rt::entry;
 use embassy_nrf::gpio::{Level, Output, OutputDrive};
 use embassy_nrf::nvmc::Nvmc;
-use memory_map::{FIRMWARE_END, FIRMWARE_START, MANIFEST_SIZE};
+use memory_map::{image_len_is_valid, FIRMWARE_START, MANIFEST_SIZE};
 use msc_flash::Uf2FlashEngine;
 use nrf_usbd::{UsbPeripheral, Usbd};
 use sha2::{Digest, Sha256};
 
+use embassy_time::{Duration, Instant};
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
 use usbd_storage::subclass::scsi::Scsi;
@@ -28,6 +35,9 @@ use usbd_storage::subclass::scsi::Scsi;
 pub use led::{BootReason, LedIndicator};
 
 const SCB_VTOR: *mut u32 = 0xE000_ED08 as *mut u32;
+const SYST_CSR: *mut u32 = 0xE000_E010 as *mut u32;
+const USBD_ENABLE: *mut u32 = 0x4002_7500 as *mut u32;
+const USBD_PULLUP: *mut u32 = 0x4002_7504 as *mut u32;
 
 struct Nrf52840Usbd;
 unsafe impl UsbPeripheral for Nrf52840Usbd {
@@ -36,6 +46,11 @@ unsafe impl UsbPeripheral for Nrf52840Usbd {
 
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
+    reset_after_fault()
+}
+
+fn reset_after_fault() -> ! {
+    double_tap::mark_fault();
     cortex_m::peripheral::SCB::sys_reset()
 }
 
@@ -66,30 +81,65 @@ fn init_nrf52840_usb_power() {
     }
 }
 
+fn factory_usb_serial() -> heapless::String<16> {
+    let device0 = unsafe { core::ptr::read_volatile(0x1000_0060 as *const u32) };
+    let device1 = unsafe { core::ptr::read_volatile(0x1000_0064 as *const u32) };
+    let mut serial = heapless::String::new();
+    let _ = core::fmt::write(&mut serial, format_args!("{device1:08X}{device0:08X}"));
+    serial
+}
+
+fn feed_inherited_watchdog() {
+    const WDT_BASE: usize = 0x4001_0000;
+    const RELOAD_MAGIC: u32 = 0x6E52_4635;
+    unsafe {
+        let running = core::ptr::read_volatile((WDT_BASE + 0x400) as *const u32) != 0;
+        if !running {
+            return;
+        }
+        let enabled = core::ptr::read_volatile((WDT_BASE + 0x508) as *const u32);
+        for register in 0..8 {
+            if enabled & (1 << register) != 0 {
+                core::ptr::write_volatile(
+                    (WDT_BASE + 0x600 + register * 4) as *mut u32,
+                    RELOAD_MAGIC,
+                );
+            }
+        }
+    }
+}
+
 use cortex_m_rt::exception;
 
 #[exception]
 unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
+    double_tap::mark_fault();
     cortex_m::peripheral::SCB::sys_reset()
 }
 
 #[entry]
 fn main() -> ! {
     // 1. Check double-tap / DFU reset trigger BEFORE initializing Embassy peripherals
-    let double_tap = double_tap::check_and_set_double_tap();
+    let fault_reset = double_tap::take_fault();
+    let double_tap = !fault_reset && double_tap::check_and_set_double_tap();
 
     start_hfclk();
     init_nrf52840_usb_power();
     let p = embassy_nrf::init(Default::default());
 
+    #[cfg(feature = "board-nice-nano-v2")]
     let led_pin = Output::new(p.P0_15, Level::High, OutputDrive::Standard);
+    #[cfg(feature = "board-xiao-nrf52840")]
+    let led_pin = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
     let mut indicator = LedIndicator::new(led_pin);
 
     // 2. Validate existing firmware at FIRMWARE_START
     let valid_fw = validate_existing_firmware();
 
     // 3. Determine if we must stay in Bootloader / DFU mode
-    let boot_reason = if double_tap {
+    let boot_reason = if fault_reset {
+        Some(BootReason::Fault)
+    } else if double_tap {
         Some(BootReason::UserRequest)
     } else if !valid_fw.valid_vector {
         Some(BootReason::NoFirmware)
@@ -121,18 +171,25 @@ fn main() -> ! {
         let scsi_buf = SCSI_BUF.init([0u8; 18432]);
         let scsi_buf_ref: &'static mut [u8] = scsi_buf.as_mut_slice();
 
-        let mut msc_class = Scsi::new(bus_alloc, 64, 0, scsi_buf_ref).unwrap();
+        let mut msc_class = match Scsi::new(bus_alloc, 64, 0, scsi_buf_ref) {
+            Ok(class) => class,
+            Err(_) => reset_after_fault(),
+        };
 
-        let mut usb_dev = UsbDeviceBuilder::new(bus_alloc, UsbVidPid(0x239A, 0x0029))
-            .strings(&[StringDescriptors::default()
+        let usb_serial = factory_usb_serial();
+        let usb_builder = UsbDeviceBuilder::new(bus_alloc, UsbVidPid(0x239A, 0x0029));
+        let usb_builder = match usb_builder.strings(&[StringDescriptors::default()
                 .manufacturer("Nikachev")
                 .product("Pager Boot Drive")
-                .serial_number("12345678")])
-            .unwrap()
-            .device_class(0x00)
-            .max_packet_size_0(64)
-            .unwrap()
-            .build();
+                .serial_number(usb_serial.as_str())]) {
+            Ok(builder) => builder,
+            Err(_) => reset_after_fault(),
+        };
+        let usb_builder = usb_builder.device_class(0x00);
+        let mut usb_dev = match usb_builder.max_packet_size_0(64) {
+            Ok(builder) => builder.build(),
+            Err(_) => reset_after_fault(),
+        };
 
         // Re-enable USBD peripheral hardware and D+ pullup resistor (USBPULLUP = 1)
         unsafe {
@@ -144,8 +201,8 @@ fn main() -> ! {
         let nvmc = Nvmc::new(p.NVMC);
         let mut flash_engine = Uf2FlashEngine::new(nvmc);
 
-        let mut loop_counter: u32 = 0;
-        let mut tick_ms: u32 = 0;
+        let started_at = Instant::now();
+        let mut reset_at: Option<Instant> = None;
 
         loop {
             // Poll USB at full hardware speed for zero-latency Bulk transfers
@@ -154,23 +211,26 @@ fn main() -> ! {
                 flash_engine.handle_scsi_command(cmd);
             });
 
-            loop_counter = loop_counter.wrapping_add(1);
+            // A watchdog survives reset and cannot be stopped on nRF52840.
+            // Feed every reload register enabled by the previous application.
+            feed_inherited_watchdog();
 
-            // Feed watchdog if active from main application
-            unsafe {
-                core::ptr::write_volatile(0x4001_0600 as *mut u32, 0x6E52_4635);
+            let now = Instant::now();
+            indicator.tick_nonblocking(now.duration_since(started_at).as_millis() as u32, reason);
+
+            if flash_engine.take_reset_pending() {
+                // Give the MSC transport time to send the successful CSW before reset.
+                reset_at = Some(now + Duration::from_millis(100));
+            }
+            if reset_at.is_some_and(|deadline| now >= deadline) {
+                cortex_m::peripheral::SCB::sys_reset();
             }
 
-            if (loop_counter & 0x1FFF) == 0 {
-                tick_ms = tick_ms.wrapping_add(1);
-                indicator.tick_nonblocking(tick_ms, reason);
-
-                // DFU Auto-Timeout: If idle for 5 minutes (300,000 ms), boot existing firmware if valid
-                if tick_ms >= 300_000 {
-                    let fw = validate_existing_firmware();
-                    if fw.valid_vector && fw.valid_sig && fw.valid_hash {
-                        cortex_m::peripheral::SCB::sys_reset();
-                    }
+            // Approximate five-minute timeout based on RTC, independent of USB load.
+            if now.duration_since(started_at) >= Duration::from_secs(300) {
+                let fw = validate_existing_firmware();
+                if fw.valid_vector && fw.valid_sig && fw.valid_hash {
+                    cortex_m::peripheral::SCB::sys_reset();
                 }
             }
         }
@@ -199,9 +259,7 @@ fn validate_existing_firmware() -> FirmwareValidationResult {
         };
     }
 
-    let image_len = manifest.image_len as usize;
-    let max_len = (FIRMWARE_END - FIRMWARE_START) as usize;
-    if image_len > max_len {
+    if !image_len_is_valid(manifest.image_len) {
         return FirmwareValidationResult {
             valid_vector: false,
             valid_sig: false,
@@ -209,6 +267,7 @@ fn validate_existing_firmware() -> FirmwareValidationResult {
         };
     }
 
+    let image_len = manifest.image_len as usize;
     let image_start = FIRMWARE_START + MANIFEST_SIZE;
     let image_slice = unsafe { core::slice::from_raw_parts(image_start as *const u8, image_len) };
 
@@ -231,8 +290,8 @@ fn valid_vector_table(image: &[u8], image_start: u32) -> bool {
     if image.len() < 8 {
         return false;
     }
-    let initial_sp = u32::from_le_bytes(image[..4].try_into().unwrap());
-    let reset = u32::from_le_bytes(image[4..8].try_into().unwrap());
+    let initial_sp = u32::from_le_bytes([image[0], image[1], image[2], image[3]]);
+    let reset = u32::from_le_bytes([image[4], image[5], image[6], image[7]]);
     (0x2000_0000..=0x2004_0000).contains(&initial_sp)
         && (reset & 1) == 1
         && (image_start..image_start + image.len() as u32).contains(&(reset & !1))
@@ -241,6 +300,12 @@ fn valid_vector_table(image: &[u8], image_start: u32) -> bool {
 fn jump(image_start: u32) -> ! {
     unsafe {
         cortex_m::interrupt::disable();
+
+        // Embassy configures SysTick during peripheral initialization. Restore
+        // timer and USB state to their reset values before handing over.
+        core::ptr::write_volatile(SYST_CSR, 0);
+        core::ptr::write_volatile(USBD_PULLUP, 0);
+        core::ptr::write_volatile(USBD_ENABLE, 0);
 
         // Disable all NVIC interrupts and clear any pending — clean slate for firmware
         for i in 0u32..8 {

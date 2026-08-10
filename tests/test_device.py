@@ -1,32 +1,25 @@
 import os
 import time
-import subprocess
 import sys
 import serial
 import asyncio
 import pytest
-from pathlib import Path
-from bleak import BleakClient
+from bleak import BleakClient, BleakScanner
 
 from common import (
     find_serial_port,
     run_async,
-    wait_for_serial_reconnect,
-    wait_for_serial_disconnect,
     find_ble_device,
     SERVICE_UUID,
-    LED_CHAR_UUID,
-    STATUS_CHAR_UUID,
     HID_INPUT_REPORT_UUID,
-    HID_BOOT_INPUT_REPORT_UUID,
     HID_PROTOCOL_MODE_UUID,
     HID_REPORT_MAP_UUID,
-    HID_INFO_UUID,
-    DIS_SERVICE_UUID,
     BATTERY_SERVICE_UUID,
-    LOG_MARKERS,
+    BATTERY_LEVEL_UUID,
     DEFAULT_PORT,
 )
+
+pytestmark = pytest.mark.hil
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,90 +41,146 @@ def serial_port():
 # BLE Functionality Tests
 # ---------------------------------------------------------------------------
 
-def _trigger_webusb_disconnect():
-    try:
-        import usb.core, usb.util, struct, zlib, libusb_package
-        backend = libusb_package.get_libusb1_backend()
-        dev = usb.core.find(idVendor=0x1209, idProduct=0x0002, backend=backend)
-        if dev:
-            for cfg in dev:
-                for intf in cfg:
-                    if intf.bInterfaceClass == 0xFF:
-                        try:
-                            if dev.is_kernel_driver_active(intf.bInterfaceNumber):
-                                dev.detach_kernel_driver(intf.bInterfaceNumber)
-                        except Exception:
-                            pass
-                        usb.util.claim_interface(dev, intf.bInterfaceNumber)
-                        ep_out = usb.util.find_descriptor(
-                            intf,
-                            custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress)
-                            == usb.util.ENDPOINT_OUT,
-                        )
-                        payload = bytes([6])  # DISCONNECT opcode
-                        frame = struct.pack(
-                            "<4sBBIHI",
-                            b"PGR1",
-                            1,
-                            1,
-                            1,
-                            len(payload),
-                            zlib.crc32(payload) & 0xFFFFFFFF,
-                        ) + payload
-                        ep_out.write(frame)
-                        usb.util.release_interface(dev, intf.bInterfaceNumber)
-    except Exception:
-        pass
-
-
 async def find_hil_ble_device(retries=3):
     for attempt in range(retries):
         dev = await find_ble_device("Pager")
         if dev:
             return dev
-        _trigger_webusb_disconnect()
         await asyncio.sleep(1.0)
     raise RuntimeError("Could not find BLE device 'Pager'")
 
 
+def _decode_state(payload):
+    assert len(payload) >= 10 and payload[0] == 5
+    return {
+        "enabled": bool(payload[1]),
+        "link": payload[2],
+        "active": None if payload[3] == 0xFF else payload[3],
+        "connected": None if payload[4] == 0xFF else payload[4],
+        "pairing": bool(payload[5]),
+        "bonds": tuple(bool(value) for value in payload[6:9]),
+        "hid_ready": bool(payload[9]),
+    }
+
+
+@pytest.mark.contract
+def test_prepaired_slot_switching_fixture():
+    """Switch 1 → 2 → 1 without pairing, mutation of slot 3, or USB loss."""
+    import libusb_package
+    from pager_tools.usb import PagerUsbClient, find_application
+
+    backend = libusb_package.get_libusb1_backend()
+    device = find_application(backend=backend, serial=os.getenv("PAGER_USB_SERIAL"))
+    assert device is not None, "prepared Pager USB device not found"
+
+    with PagerUsbClient(device) as client:
+        initial = _decode_state(client.call(bytes([3])))
+        assert initial["enabled"], "HIL fixture must start with Bluetooth enabled"
+        assert initial["bonds"] == (True, True, False), (
+            "HIL fixture must have slot 1=Mac, slot 2=other host, slot 3 empty"
+        )
+
+        # The second host is not controlled by HIL (typically an Android phone),
+        # so activation must not require it to wake and initiate a connection.
+        client.call(bytes([4, 1]), timeout_ms=12000)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = _decode_state(client.call(bytes([3])))
+            if state["active"] == 1:
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("slot 2 did not become active")
+        assert state["bonds"] == (True, True, False)
+
+        # The Mac running HIL is controlled and must reconnect with HID ready.
+        client.call(bytes([4, 0]), timeout_ms=12000)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            state = _decode_state(client.call(bytes([3])))
+            if state["connected"] == 0 and state["hid_ready"]:
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("slot 1 did not reconnect with HID ready")
+        assert state["bonds"] == (True, True, False)
+
+        client.call(bytes([8]) + b"Pager HIL slot 1\n", timeout_ms=12000)
+
+
+@pytest.mark.contract
+def test_bluetooth_off_on_preserves_usb_and_bonds():
+    """Stop the radio and reconnect slot 1 without releasing WebUSB."""
+    import libusb_package
+    from pager_tools.usb import PagerUsbClient, find_application
+
+    backend = libusb_package.get_libusb1_backend()
+    device = find_application(backend=backend, serial=os.getenv("PAGER_USB_SERIAL"))
+    assert device is not None, "prepared Pager USB device not found"
+
+    with PagerUsbClient(device) as client:
+        client.call(bytes([6, 0]), timeout_ms=12000)
+        off = _decode_state(client.call(bytes([3])))
+        assert not off["enabled"]
+        assert off["active"] is None
+        assert off["connected"] is None
+        assert off["bonds"] == (True, True, False)
+
+        client.call(bytes([6, 1]), timeout_ms=12000)
+        client.call(bytes([4, 0]), timeout_ms=12000)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            state = _decode_state(client.call(bytes([3])))
+            if state["connected"] == 0 and state["hid_ready"]:
+                break
+            time.sleep(0.25)
+        else:
+            pytest.fail("slot 1 did not reconnect after Bluetooth Off/On")
+        assert state["bonds"] == (True, True, False)
+
+
 @pytest.mark.ble
 def test_ble_functionality():
-    """Connect to Pager over BLE, read Status, and write LED states."""
+    """Connect to Pager and verify the standard HID keyboard profile."""
+    if sys.platform == "darwin":
+        pytest.skip(
+            "macOS owns a paired HID connection; discovery/third-party GATT access "
+            "is covered by manual pairing validation"
+        )
     print("\n--- Running BLE Functionality Test ---")
 
     async def run_ble_test():
         device = await find_hil_ble_device()
         print(f"Found Pager BLE Device: {device.name} [{device.address}]...")
 
+        if sys.platform == "darwin":
+            advertisements = await BleakScanner.discover(timeout=3.0, return_adv=True)
+            advertisement = next(
+                (adv for found, adv in advertisements.values() if found.address == device.address),
+                None,
+            )
+            assert advertisement is not None
+            assert any(
+                uuid.lower() == "1812" or uuid.lower().startswith("00001812-")
+                for uuid in advertisement.service_uuids
+            )
+
         async with BleakClient(device, timeout=20.0) as client:
             assert client.is_connected, "Failed to connect to BLE GATT server"
             print("Connected to BLE GATT server!")
 
             available_uuids = [c.uuid.lower() for s in client.services for c in s.characteristics]
-            if STATUS_CHAR_UUID.lower() not in available_uuids:
-                print("Custom service characteristics not exposed in current macOS GATT session")
-                return
-
-            status = await client.read_gatt_char(STATUS_CHAR_UUID)
-            print(f"Read Status characteristic: {bytes(status)}")
-            assert len(status) == 1, f"Expected 1 byte, got {len(status)}"
-
-            print("Writing LED mode 1 (High)...")
-            await client.write_gatt_char(LED_CHAR_UUID, bytearray([0x01]))
-            await asyncio.sleep(0.5)
-
-            print("Writing LED mode 0 (Blink)...")
-            await client.write_gatt_char(LED_CHAR_UUID, bytearray([0x00]))
-            await asyncio.sleep(0.5)
+            # macOS claims standard HID services for its system keyboard driver,
+            # so CoreBluetooth intentionally exposes only the remaining GATT
+            # services to Bleak. The HID UUID is verified in advertising above.
+            if sys.platform != "darwin":
+                assert HID_REPORT_MAP_UUID.lower() in available_uuids
+                assert HID_INPUT_REPORT_UUID.lower() in available_uuids
+            assert BATTERY_LEVEL_UUID.lower() in available_uuids
 
             print("BLE test completed successfully!")
 
-    try:
-        run_async(run_ble_test())
-    except Exception as e:
-        if "Could not find BLE device" in str(e) or "Bluetooth" in str(e):
-            pytest.skip(f"BLE test skipped: {e}")
-        raise
+    run_async(run_ble_test())
 
 
 # ---------------------------------------------------------------------------
@@ -174,20 +223,6 @@ def test_serial_logs():
 
 
 @pytest.mark.dfu
-def test_dfu_reboot_command(serial_port):
-    """Test software reboot command ('dfu') into Pager Bootloader DFU mode"""
-    print("\n--- Running DFU Reboot Command Test ---")
-    res = subprocess.run(
-        [sys.executable, os.path.join(_REPO_ROOT, "tools", "test_dfu_reboot.py")],
-        capture_output=True,
-        text=True,
-        cwd=_REPO_ROOT,
-    )
-    assert res.returncode == 0, f"DFU Reboot failed: {res.stdout}\n{res.stderr}"
-    print("Device successfully rebooted into Pager Bootloader DFU mode!")
-
-
-@pytest.mark.dfu
 def test_uf2_flashing():
     """Test UF2 firmware flashing to Pager Bootloader"""
     print("\n--- Running UF2 Flashing Test ---")
@@ -203,6 +238,11 @@ def test_uf2_flashing():
 @pytest.mark.ble
 def test_visible_gatt_metadata_and_hid_when_exposed():
     """Verify visible metadata and HID details when CoreBluetooth exposes them."""
+    if sys.platform == "darwin":
+        pytest.skip(
+            "macOS hides the system-owned HID GATT database; metadata is covered "
+            "by manual pairing validation"
+        )
     print("\n--- Running BLE HID metadata/report Test ---")
 
     async def run_services_test():
@@ -212,15 +252,6 @@ def test_visible_gatt_metadata_and_hid_when_exposed():
 
             services = client.services
             uuids = [s.uuid.lower() for s in services]
-
-            if DIS_SERVICE_UUID.lower() not in uuids:
-                print("DIS service (0x180A) not exposed in current macOS GATT session")
-                return
-
-            manufacturer = await client.read_gatt_char("00002a29-0000-1000-8000-00805f9b34fb")
-            assert manufacturer.decode("utf-8", "ignore") == "Nikachev"
-            model = await client.read_gatt_char("00002a24-0000-1000-8000-00805f9b34fb")
-            assert model.decode("utf-8", "ignore") == "Pager-nRF52840"
 
             assert BATTERY_SERVICE_UUID.lower() in uuids, "Battery service (0x180F) not found"
 
@@ -242,15 +273,7 @@ def test_visible_gatt_metadata_and_hid_when_exposed():
             assert mode[0] == 0, "HID protocol mode write to 0 was not reflected"
             await client.write_gatt_char(HID_PROTOCOL_MODE_UUID, bytearray([0x01]))
 
-            for mode_byte in (0x00, 0x01, 0x02):
-                await client.write_gatt_char(LED_CHAR_UUID, bytearray([mode_byte]))
-
-    try:
-        run_async(run_services_test())
-    except Exception as e:
-        if "Could not find BLE device" in str(e) or "Bluetooth" in str(e):
-            pytest.skip(f"BLE test skipped: {e}")
-        raise
+    run_async(run_services_test())
 
 
 @pytest.mark.dfu
@@ -274,6 +297,9 @@ def test_partition_limits():
     signed_bin = os.path.join(_REPO_ROOT, "dist", "pager-signed.bin")
     if os.path.exists(signed_bin):
         size = os.path.getsize(signed_bin)
-        assert size <= 925440, f"Signed payload {size} exceeds partition limit 925440"
-        print(f"Partition limit test passed: payload size {size} / 925440 bytes")
-
+        import json
+        with open(os.path.join(_REPO_ROOT, "layout.json"), encoding="utf-8") as layout_file:
+            layout = json.load(layout_file)
+        limit = layout["storage_start"] - layout["firmware_start"]
+        assert size <= limit, f"Signed payload {size} exceeds partition limit {limit}"
+        print(f"Partition limit test passed: payload size {size} / {limit} bytes")

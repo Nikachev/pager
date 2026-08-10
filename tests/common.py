@@ -19,8 +19,11 @@ def find_serial_port():
     if env_port:
         return env_port
     requested_serial = os.getenv("PAGER_USB_SERIAL")
-    requested_vid = os.getenv("PAGER_USB_VID")
-    requested_pid = os.getenv("PAGER_USB_PID")
+    # The development SWD probe is another USB CDC device and can remain
+    # connected during HIL. Default to Pager's application identity so it is
+    # never mistaken for the firmware serial port.
+    requested_vid = os.getenv("PAGER_USB_VID", "0x1209")
+    requested_pid = os.getenv("PAGER_USB_PID", "0x0002")
     ports = []
     for port in list_ports.comports():
         if not port.device.startswith("/dev/cu.usbmodem"):
@@ -42,10 +45,8 @@ def find_serial_port():
 
 DEFAULT_PORT = os.getenv("SERIAL_PORT") or os.getenv("PORT")
 
-# Custom 128-bit GATT service and its characteristics (see ble.rs CustomService).
-SERVICE_UUID = "9e7a0001-0b3e-46e8-ad30-7746bad7128a"
-LED_CHAR_UUID = "9e7a0002-0b3e-46e8-ad30-7746bad7128a"
-STATUS_CHAR_UUID = "9e7a0003-0b3e-46e8-ad30-7746bad7128a"
+# Pager advertises only the standard HID and Battery services.
+SERVICE_UUID = "00001812-0000-1000-8000-00805f9b34fb"
 
 # Standard HID-over-GATT characteristics (see ble.rs HidService).
 HID_INPUT_REPORT_UUID = "00002a4d-0000-1000-8000-00805f9b34fb"
@@ -54,8 +55,8 @@ HID_PROTOCOL_MODE_UUID = "00002a4e-0000-1000-8000-00805f9b34fb"
 HID_REPORT_MAP_UUID = "00002a4b-0000-1000-8000-00805f9b34fb"
 HID_INFO_UUID = "00002a4a-0000-1000-8000-00805f9b34fb"
 HID_CONTROL_POINT_UUID = "00002a4c-0000-1000-8000-00805f9b34fb"
-DIS_SERVICE_UUID = "0000180a-0000-1000-8000-00805f9b34fb"
 BATTERY_SERVICE_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
+BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 
 # Subsystem log markers emitted by log_msg!() in the firmware.
 LOG_MARKERS = ("BLE", "SERIAL:", "System heartbeat")
@@ -97,7 +98,7 @@ async def find_ble_device(name_prefix="Pager", timeout=8.0):
     service_uuid_lower = SERVICE_UUID.lower()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        res = await BleakScanner.discover(timeout=1.5, return_adv=True, service_uuids=[SERVICE_UUID])
+        res = await BleakScanner.discover(timeout=1.5, return_adv=True)
         for d, adv in res.values():
             name = d.name or adv.local_name
             if name and name.startswith(name_prefix):

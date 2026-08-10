@@ -29,6 +29,7 @@ const REQUEST_SENSE: u8 = 0x03;
 const INQUIRY: u8 = 0x12;
 const MODE_SENSE_6: u8 = 0x1A;
 const MODE_SENSE_10: u8 = 0x5A;
+const START_STOP_UNIT: u8 = 0x1B;
 
 /* SBC */
 const READ_10: u8 = 0x28;
@@ -36,6 +37,7 @@ const READ_16: u8 = 0x88;
 const READ_CAPACITY_10: u8 = 0x25;
 const READ_CAPACITY_16: u8 = 0x9E;
 const WRITE_10: u8 = 0x2A;
+const SYNCHRONIZE_CACHE_10: u8 = 0x35;
 
 /* MMC */
 const READ_FORMAT_CAPACITIES: u8 = 0x23;
@@ -55,6 +57,11 @@ pub enum ScsiCommand {
         alloc_len: u16,
     },
     TestUnitReady,
+    StartStop {
+        start: bool,
+        load_eject: bool,
+    },
+    SynchronizeCache,
     RequestSense {
         desc: bool,
         alloc_len: u8,
@@ -108,6 +115,11 @@ pub enum PageControl {
 fn parse_cb(cb: &[u8]) -> ScsiCommand {
     match cb[0] {
         TEST_UNIT_READY => ScsiCommand::TestUnitReady,
+        START_STOP_UNIT => ScsiCommand::StartStop {
+            start: cb[4] & 0x01 != 0,
+            load_eject: cb[4] & 0x02 != 0,
+        },
+        SYNCHRONIZE_CACHE_10 => ScsiCommand::SynchronizeCache,
         INQUIRY => ScsiCommand::Inquiry {
             evpd: (cb[1] & 0b00000001) != 0,
             page_code: cb[2],

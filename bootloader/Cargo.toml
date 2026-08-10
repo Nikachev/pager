@@ -6,21 +6,30 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = ["dev-bootloader", "board-nice-nano-v2"]
+dev-bootloader = []
+release-bootloader = []
+board-nice-nano-v2 = []
+board-xiao-nrf52840 = []
+
+[build-dependencies]
+serde_json = "1"
+
 [dependencies]
-cortex-m = { version = "0.7.7", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7.5"
-ed25519-dalek = { version = "2.1.1", default-features = false }
-sha2 = { version = "0.10.8", default-features = false }
+cortex-m = { version = "0.7.8", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7.6"
+ed25519-compact = { version = "2.3.1", default-features = false, features = ["opt_size"] }
+sha2 = { version = "0.11.0", default-features = false }
 embassy-nrf = { version = "0.11.0", features = ["nrf52840", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
-critical-section = "1.2.0"
-embassy-usb = { version = "0.6.0" }
-embassy-executor = { version = "0.10.0", features = ["platform-cortex-m", "executor-thread"] }
 embassy-time = { version = "0.5.1" }
 embedded-storage = "0.3.1"
 usb-device = "0.3.2"
 nrf-usbd = "0.3.0"
 usbd-storage = { path = "usbd-storage", features = ["bbb", "scsi"] }
-static_cell = "2.1.0"
+static_cell = "2.1.1"
+heapless = "0.9.3"
+pager-bootloader-core = { path = "../bootloader-core" }
 
 [profile.release]
 codegen-units = 1

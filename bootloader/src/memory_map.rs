@@ -1,12 +1,10 @@
 //! Memory Map and Flash Partitioning for Pager nRF52840 Bootloader
 
-pub const FIRMWARE_START: u32 = 0x0000_C000;
-pub const FIRMWARE_END: u32 = 0x000F_E000;
-pub const PAGE_SIZE: u32 = 4096;
-pub const MANIFEST_SIZE: u32 = 256;
+include!(concat!(env!("OUT_DIR"), "/layout.rs"));
 pub const TOTAL_PAGES: usize = ((FIRMWARE_END - FIRMWARE_START) / PAGE_SIZE) as usize;
+pub const UF2_PAYLOAD_SIZE: u32 = 256;
+pub const MAX_IMAGE_LEN: u32 = FIRMWARE_END - FIRMWARE_START - MANIFEST_SIZE;
 
-/// Verifies whether the given memory range falls entirely within the application firmware slot
-pub fn is_within_firmware_slot(addr: u32, len: u32) -> bool {
-    addr >= FIRMWARE_START && (addr + len) <= FIRMWARE_END
+pub const fn image_len_is_valid(image_len: u32) -> bool {
+    image_len > 0 && image_len <= MAX_IMAGE_LEN
 }

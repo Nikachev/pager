@@ -20,13 +20,16 @@ XTASK       ?= cargo run --target $(HOST_TARGET) --package xtask --
 
 .DEFAULT_GOAL := build
 
-.PHONY: all build check clippy fmt verify bootloader test test-dfu test-flash test-all flash flash-uf2 flash-swd flash-bootloader monitor info clean clean-dist clean-all help
+.PHONY: all build build-release check clippy fmt verify quality bootloader bootloader-release test test-hil test-dfu test-flash test-all flash flash-uf2 flash-swd flash-bootloader monitor info clean clean-dist clean-all help
 
 all: verify build
 
 ## 🔨 Build & Quality Targets
 build:
 	@$(XTASK) build
+
+build-release:
+	@$(XTASK) build-release
 
 info:
 	@$(XTASK) info
@@ -45,11 +48,30 @@ clippy:
 verify: fmt clippy
 
 bootloader:
-	cargo build --manifest-path $(BOOTLOADER_MANIFEST) --release
+	@$(XTASK) bootloader-dev
+
+bootloader-release:
+	@$(XTASK) bootloader-release
 
 ci: fmt clippy bootloader
 	$(XTASK) build
-	$(PYTHON) -m compileall -q scripts tests 2>/dev/null || true
+	$(PYTHON) -m compileall -q pager_tools scripts tests tools
+
+quality: fmt clippy bootloader
+	cargo test --target $(HOST_TARGET) --package pager --lib
+	cargo test --target $(HOST_TARGET) --package pager-bootloader-core
+	cargo test --target $(HOST_TARGET) --package xtask
+	$(PYTEST) tests/test_protocol.py tests/test_flash_tool.py
+	$(PYTHON) -m compileall -q pager_tools scripts tests tools
+	PAGER_BOARD=xiao-nrf52840 $(XTASK) bootloader-dev
+	PAGER_BOARD=xiao-nrf52840 $(XTASK) build
+	$(XTASK) build
+	$(XTASK) verify
+	$(XTASK) check-layout
+	$(XTASK) check-protocol
+	$(XTASK) build-ui
+	$(XTASK) check-ui
+	$(XTASK) size
 
 fmt:
 	@echo "Checking code formatting..."
@@ -59,11 +81,16 @@ fmt:
 
 # Non-destructive tests (do NOT flash or reboot hardware)
 test:
+	cargo test --target $(HOST_TARGET) --package pager --lib
+	cargo test --target $(HOST_TARGET) --package pager-bootloader-core
+	cargo test --target $(HOST_TARGET) --package xtask
+
+test-hil:
 	@echo "=================================================="
 	@echo "     Running Non-Destructive Host & Device Tests  "
 	@echo "=================================================="
 	cargo test --target $(HOST_TARGET) --package xtask
-	$(PYTEST) tests/test_device.py
+	$(PYTEST) tests/test_device.py --run-hil
 
 # Destructive DFU tests (flashes & reboots hardware)
 test-dfu: test-flash
@@ -72,7 +99,7 @@ test-flash: build
 	@echo "=================================================="
 	@echo "     Running DFU Flashing Integration Tests      "
 	@echo "=================================================="
-	$(PYTEST) tests/test_device.py --run-destructive -m dfu
+	$(PYTEST) tests/test_device.py --run-hil --run-destructive -m dfu
 
 # Complete test suite (non-destructive + DFU flashing tests)
 test-all: build
@@ -80,7 +107,7 @@ test-all: build
 	@echo "        Running Full Suite (All Tests)           "
 	@echo "=================================================="
 	cargo test --target $(HOST_TARGET) --package xtask
-	$(PYTEST) tests/test_device.py --run-destructive
+	$(PYTEST) tests/test_device.py --run-hil --run-destructive
 
 ## ⚡ Flashing Targets
 

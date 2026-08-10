@@ -1,32 +1,8 @@
-usbd-storage
-===========
+# Pager usbd-storage fork
 
-Experimental USB Mass Storage implementation for [usb-device](https://crates.io/crates/usb-device).
+Minimal synchronous USB Mass Storage implementation used only by the Pager
+bootloader. The fork retains Bulk-Only Transport and the required SCSI command
+set. UFI, STM32 examples and unrelated optional integrations were removed.
 
-# Subclasses
-Implemented subclasses:
-* `SCSI device` - number of SCSI commands is not exhaustive. Open a PR, if you want to add one.
-* `USB Floppy Interface`
-
-It is possible to implement a vendor specific subclass.
-
-# Transports
-Currently, only `Bulk Only` transport is implemented. It is possible to implement a vendor-specific transport.
-
-# Features
-This crate has a couple of opt-in features that all could be used independently.
-
-| Feature | Description                           |
-| ------- |---------------------------------------|
-| `bbb` | Include Bulk Only Transport           |
-| `scsi` | Include SCSI subclass                 |
-| `ufi` | Include USB Floppy Interface sublcass |
-| `defmt` | Enable logging via [defmt](https://crates.io/crates/defmt) crate |
-
-# Examples
-Currently, examples are tested under macOS only.
-
-| Name | Description                                                                                                                      |
-| ---- |----------------------------------------------------------------------------------------------------------------------------------|
-| `stm32f411x_scsi_bbb.rs` | SCSI USB Mass Storage device (USB stick) based on Bulk Only Transport that stores data in RAM.                                   |
-| `stm32f411x_ufi_bbb.rs` | USB Floppy Drive. Emulates a USB attached external floppy disk drive with insearted read-only diskette and a dancing cat `.gif`. |
+The public API is intentionally scoped to Pager. Rebase upstream changes only
+after the bootloader transaction and macOS/Android UF2 copy tests pass.
