@@ -5,14 +5,344 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pager — USB control</title>
 <style>
-:root{color-scheme:light;--bg:#f6f7f9;--card:#fff;--text:#17202a;--muted:#697586;--line:#e3e7ec;--accent:#2563eb;--accent-soft:#eff6ff;--green:#15803d;--green-soft:#f0fdf4;--amber:#a16207;--amber-soft:#fffbeb;--red:#b42318;--red-soft:#fff1f0;--shadow:0 10px 30px rgba(20,32,50,.06)}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}button,input{font:inherit}button{border:0;cursor:pointer}button:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid rgba(37,99,235,.25);outline-offset:2px}button:disabled{cursor:not-allowed;opacity:.45}
-main{width:min(780px,100%);margin:auto;padding:28px 18px 56px}.topbar{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px}.brand h1{margin:0;font-size:22px;letter-spacing:-.03em}.brand p{margin:2px 0 0;color:var(--muted);font-size:13px}.pill{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:99px;background:var(--card);color:var(--muted);font-size:12px;font-weight:650}.pill:before{content:"";width:7px;height:7px;border-radius:50%;background:#98a2b3}.pill.on{color:var(--green);border-color:#bbf7d0;background:var(--green-soft)}.pill.on:before{background:#22c55e}.pill.busy{color:var(--amber);border-color:#fde68a;background:var(--amber-soft)}.pill.busy:before{background:#f59e0b}
-.panel{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px;margin:14px 0}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.panel h2{margin:0;font-size:15px}.muted{color:var(--muted);font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.btn{min-height:38px;padding:8px 13px;border-radius:9px;background:#eef1f4;color:var(--text);font-weight:650}.btn:hover:not(:disabled){filter:brightness(.98)}.btn.primary{background:var(--accent);color:white}.btn.danger{background:var(--red-soft);color:var(--red)}.btn.ghost{background:transparent;border:1px solid var(--line)}
-.ble-summary{display:flex;align-items:center;gap:10px;margin-top:10px;color:var(--muted);font-size:13px}.slots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}.slot{min-width:0;border:1px solid var(--line);border-radius:13px;padding:14px;background:#fff;transition:.16s}.slot.active{border-color:#93c5fd;background:var(--accent-soft)}.slot.connected{border-color:#86efac;background:var(--green-soft)}.slot.pairing{border-color:#fcd34d;background:var(--amber-soft)}.slot-top{display:flex;align-items:center;justify-content:space-between;gap:8px}.slot-number{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:750}.slot-state{font-size:11px;color:var(--muted);white-space:nowrap}.slot-name{margin:12px 0 3px;font-weight:720;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.slot-address{min-height:18px;color:var(--muted);font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow:hidden;text-overflow:ellipsis}.slot-actions{display:flex;gap:6px;margin-top:13px}.slot-actions .btn{min-height:34px;padding:6px 9px;font-size:12px}.slot-actions .btn:first-child{flex:1}.icon-btn{width:34px;padding:0}.empty .slot-name{color:var(--muted);font-weight:600}
-.send{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:14px}.send input{min-width:0;border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:white;color:var(--text)}details{margin-top:14px}summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:650}.diagnostics{padding-top:12px}.log{height:170px;overflow:auto;margin-top:12px;padding:12px;border-radius:10px;background:#111827;color:#d1d5db;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.log .ok{color:#86efac}.log .err{color:#fca5a5}.log .warn{color:#fde68a}
-dialog{width:min(400px,calc(100% - 32px));border:1px solid var(--line);border-radius:15px;padding:0;box-shadow:0 24px 70px rgba(20,32,50,.22)}dialog::backdrop{background:rgba(15,23,42,.38)}.dialog-body{padding:20px}.dialog-body h3{margin:0 0 5px}.dialog-body p{margin:0 0 16px;color:var(--muted);font-size:13px}.dialog-body input{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px}.dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}
-@media(max-width:650px){main{padding-top:20px}.topbar{align-items:flex-start}.slots{grid-template-columns:1fr}.slot-name{white-space:normal}.panel{padding:15px}.send{grid-template-columns:1fr}.send .btn{width:100%}}
+:root {
+  color-scheme:light;
+  --bg:#f6f7f9;
+  --card:#fff;
+  --text:#17202a;
+  --muted:#697586;
+  --line:#e3e7ec;
+  --accent:#2563eb;
+  --accent-soft:#eff6ff;
+  --green:#15803d;
+  --green-soft:#f0fdf4;
+  --amber:#a16207;
+  --amber-soft:#fffbeb;
+  --red:#b42318;
+  --red-soft:#fff1f0;
+  --shadow:0 10px 30px rgba(20,32,50,.06)
+}
+* {
+  box-sizing:border-box
+}
+body {
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:15px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
+}
+button,input {
+  font:inherit
+}
+button {
+  border:0;
+  cursor:pointer
+}
+button:focus-visible,input:focus-visible,summary:focus-visible {
+  outline:3px solid rgba(37,99,235,.25);
+  outline-offset:2px
+}
+button:disabled {
+  cursor:not-allowed;
+  opacity:.45
+}
+main {
+  width:min(780px,100%);
+  margin:auto;
+  padding:28px 18px 56px
+}
+.topbar {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  margin-bottom:22px
+}
+.brand h1 {
+  margin:0;
+  font-size:22px;
+  letter-spacing:-.03em
+}
+.brand p {
+  margin:2px 0 0;
+  color:var(--muted);
+  font-size:13px
+}
+.pill {
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  padding:6px 10px;
+  border:1px solid var(--line);
+  border-radius:99px;
+  background:var(--card);
+  color:var(--muted);
+  font-size:12px;
+  font-weight:650
+}
+.pill:before {
+  content:"";
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#98a2b3
+}
+.pill.on {
+  color:var(--green);
+  border-color:#bbf7d0;
+  background:var(--green-soft)
+}
+.pill.on:before {
+  background:#22c55e
+}
+.pill.busy {
+  color:var(--amber);
+  border-color:#fde68a;
+  background:var(--amber-soft)
+}
+.pill.busy:before {
+  background:#f59e0b
+}
+.panel {
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:16px;
+  box-shadow:var(--shadow);
+  padding:18px;
+  margin:14px 0
+}
+.panel-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px
+}
+.panel h2 {
+  margin:0;
+  font-size:15px
+}
+.muted {
+  color:var(--muted);
+  font-size:13px
+}
+.actions {
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:16px
+}
+.btn {
+  min-height:38px;
+  padding:8px 13px;
+  border-radius:9px;
+  background:#eef1f4;
+  color:var(--text);
+  font-weight:650
+}
+.btn:hover:not(:disabled) {
+  filter:brightness(.98)
+}
+.btn.primary {
+  background:var(--accent);
+  color:white
+}
+.btn.danger {
+  background:var(--red-soft);
+  color:var(--red)
+}
+.btn.ghost {
+  background:transparent;
+  border:1px solid var(--line)
+}
+.ble-summary {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:10px;
+  color:var(--muted);
+  font-size:13px
+}
+.slots {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:10px;
+  margin-top:14px
+}
+.slot {
+  min-width:0;
+  border:1px solid var(--line);
+  border-radius:13px;
+  padding:14px;
+  background:#fff;
+  transition:.16s
+}
+.slot.active {
+  border-color:#93c5fd;
+  background:var(--accent-soft)
+}
+.slot.connected {
+  border-color:#86efac;
+  background:var(--green-soft)
+}
+.slot.pairing {
+  border-color:#fcd34d;
+  background:var(--amber-soft)
+}
+.slot-top {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px
+}
+.slot-number {
+  font-size:11px;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--muted);
+  font-weight:750
+}
+.slot-state {
+  font-size:11px;
+  color:var(--muted);
+  white-space:nowrap
+}
+.slot-name {
+  margin:12px 0 3px;
+  font-weight:720;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+.slot-address {
+  min-height:18px;
+  color:var(--muted);
+  font:11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  overflow:hidden;
+  text-overflow:ellipsis
+}
+.slot-actions {
+  display:flex;
+  gap:6px;
+  margin-top:13px
+}
+.slot-actions .btn {
+  min-height:34px;
+  padding:6px 9px;
+  font-size:12px
+}
+.slot-actions .btn:first-child {
+  flex:1
+}
+.icon-btn {
+  width:34px;
+  padding:0
+}
+.empty .slot-name {
+  color:var(--muted);
+  font-weight:600
+}
+.send {
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:8px;
+  margin-top:14px
+}
+.send input {
+  min-width:0;
+  border:1px solid var(--line);
+  border-radius:9px;
+  padding:9px 11px;
+  background:white;
+  color:var(--text)
+}
+details {
+  margin-top:14px
+}
+summary {
+  cursor:pointer;
+  color:var(--muted);
+  font-size:13px;
+  font-weight:650
+}
+.diagnostics {
+  padding-top:12px
+}
+.log {
+  height:170px;
+  overflow:auto;
+  margin-top:12px;
+  padding:12px;
+  border-radius:10px;
+  background:#111827;
+  color:#d1d5db;
+  font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+  white-space:pre-wrap
+}
+.log .ok {
+  color:#86efac
+}
+.log .err {
+  color:#fca5a5
+}
+.log .warn {
+  color:#fde68a
+}
+dialog {
+  width:min(400px,calc(100% - 32px));
+  border:1px solid var(--line);
+  border-radius:15px;
+  padding:0;
+  box-shadow:0 24px 70px rgba(20,32,50,.22)
+}
+dialog::backdrop {
+  background:rgba(15,23,42,.38)
+}
+.dialog-body {
+  padding:20px
+}
+.dialog-body h3 {
+  margin:0 0 5px
+}
+.dialog-body p {
+  margin:0 0 16px;
+  color:var(--muted);
+  font-size:13px
+}
+.dialog-body input {
+  width:100%;
+  border:1px solid var(--line);
+  border-radius:9px;
+  padding:9px 11px
+}
+.dialog-actions {
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+  margin-top:17px
+}
+@media(max-width:650px) {
+  main {
+    padding-top:20px
+  }
+  .topbar {
+    align-items:flex-start
+  }
+  .slots {
+    grid-template-columns:1fr
+  }
+  .slot-name {
+    white-space:normal
+  }
+  .panel {
+    padding:15px
+  }
+  .send {
+    grid-template-columns:1fr
+  }
+  .send .btn {
+    width:100%
+  }
+}
 </style>
 </head>
 <body>
@@ -52,71 +382,560 @@ dialog{width:min(400px,calc(100% - 32px));border:1px solid var(--line);border-ra
           <button id="reboot" class="btn danger" disabled>Reboot to bootloader</button>
           <button id="factory_reset" class="btn danger" disabled>Factory reset</button>
         </div>
-        <div id="log" class="log"><span class="warn">Ready. Connect Pager over USB.</span></div>
+        <div id="log" class="log" role="log" aria-label="Device diagnostics"><span class="warn">Ready. Connect Pager over USB.</span></div>
       </div>
     </details>
   </section>
 </main>
 
-<dialog id="rename_dialog"><form method="dialog" class="dialog-body"><h3>Rename device</h3><p>The slot number is added automatically.</p><input id="rename_input" aria-label="Common Pager name" maxlength="24" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="rename_save" value="default" class="btn primary">Save</button></div></form></dialog>
-<dialog id="slot_name_dialog"><form method="dialog" class="dialog-body"><h3>Rename paired device</h3><p>The Bluetooth MAC address will remain visible below the name.</p><input id="slot_name_input" aria-label="Paired device alias" maxlength="32" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="slot_name_save" value="default" class="btn primary">Save</button></div></form></dialog>
-<dialog id="confirm_dialog"><form method="dialog" class="dialog-body"><h3 id="confirm_title">Confirm action</h3><p id="confirm_message"></p><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="confirm_accept" value="default" class="btn danger">Continue</button></div></form></dialog>
+<dialog id="rename_dialog" aria-labelledby="rename_title" aria-describedby="rename_help"><form method="dialog" class="dialog-body"><h3 id="rename_title">Rename device</h3><p id="rename_help">The slot number is added automatically. Press Escape to cancel without saving.</p><input id="rename_input" aria-label="Common Pager name" maxlength="24" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="rename_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="slot_name_dialog" aria-labelledby="slot_name_title" aria-describedby="slot_name_help"><form method="dialog" class="dialog-body"><h3 id="slot_name_title">Rename paired device</h3><p id="slot_name_help">The Bluetooth MAC address remains visible below the name. Press Escape to cancel without saving.</p><input id="slot_name_input" aria-label="Paired device alias" maxlength="32" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="slot_name_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="confirm_dialog" aria-labelledby="confirm_title" aria-describedby="confirm_message"><form method="dialog" class="dialog-body"><h3 id="confirm_title">Confirm action</h3><p id="confirm_message"></p><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="confirm_accept" value="default" class="btn danger">Continue</button></div></form></dialog>
 
 <script>
-const VID=0x1209,PID=0x0002,MAGIC=0x31524750,VERSION=5,HEADER=16,ENC=new TextEncoder(),DEC=new TextDecoder();
-const COMMAND=1,ERROR=5,GET_STATE=3,ACTIVATE_SLOT=4,CANCEL_PAIRING=5,SET_BLUETOOTH=6,CLEAR_SLOT=7,TYPE_TEXT=8,REBOOT=9,GET_LOGS=10,SET_NAME=11,SET_SLOT_NAME=12,FACTORY_RESET=13;
-const ERROR_TEXT={1:'Bad request',2:'Unsupported command',3:'Device busy or timed out',4:'Firmware update failed',5:'Keyboard is not ready or subscribed',6:'Text contains an unsupported character',7:'Bluetooth connection was lost',8:'Command queue is full'};
-const LINK=['Bluetooth off','Ready','Advertising','Waiting for pairing','Connecting','Connected','Disconnecting','Error'];
-const $=id=>document.getElementById(id);
-let device,iface,inEp,outEp,requestId=1,rx=new Uint8Array(),currentState=null,writeChain=Promise.resolve(),renamingSlot=null,eventRefresh=null,lastRevision=null;const pendingCalls=new Map();
+// Generated by tools/generate_protocol.py; edit protocol.json.
+const PAGER_PROTOCOL = Object.freeze({"frame_magic":"PGR1","frame_version":5,"state_schema":5,"max_payload":512,"application_vid":4617,"application_pid":2,"errors":{"bad_request":1,"unsupported_command":2,"busy":3,"dfu_failure":4,"hid_not_ready":5,"unsupported_character":6,"connection_lost":7,"queue_full":8},"commands":{"ping":1,"get_info":2,"get_state":3,"activate_slot":4,"cancel_pairing":5,"set_bluetooth_enabled":6,"clear_slot":7,"type_text":8,"reboot_to_bootloader":9,"get_logs":10,"set_device_name":11,"set_slot_name":12,"factory_reset":13},"header_size":16,"frame_kinds":{"command":1,"response":2,"event":3,"dfu_data":4,"error":5},"limits":{"slots":3,"device_name":24,"slot_name":32,"type_text":256}});
 
-function appendLog(text,kind=''){
-  const row=document.createElement('div');row.className=kind;row.textContent=`${new Date().toLocaleTimeString()}  ${text}`;$('log').append(row);$('log').scrollTop=$('log').scrollHeight;
-}
-function crc32(bytes){let c=~0;for(const b of bytes){c^=b;for(let n=0;n<8;n++)c=(c>>>1)^(c&1?0xedb88320:0)}return(~c)>>>0}
-function makeFrame(req,payload){const a=new Uint8Array(HEADER+payload.length),v=new DataView(a.buffer);v.setUint32(0,MAGIC,true);v.setUint8(4,VERSION);v.setUint8(5,COMMAND);v.setUint32(6,req,true);v.setUint16(10,payload.length,true);v.setUint32(12,crc32(payload),true);a.set(payload,HEADER);return a}
-function concat(a,b){const r=new Uint8Array(a.length+b.length);r.set(a);r.set(b,a.length);return r}
-async function receiveFrame(){
-  while(true){
-    if(rx.length>=HEADER){const v=new DataView(rx.buffer,rx.byteOffset,rx.byteLength),len=v.getUint16(10,true),total=HEADER+len;if(len>512)throw Error('Invalid response length');if(rx.length>=total){const raw=rx.slice(0,total);rx=rx.slice(total);const h=new DataView(raw.buffer);if(h.getUint32(0,true)!==MAGIC||h.getUint8(4)!==VERSION)throw Error('This control page is incompatible with the device protocol');const payload=raw.slice(HEADER);if(crc32(payload)!==h.getUint32(12,true))throw Error('Invalid response checksum');return{kind:h.getUint8(5),id:h.getUint32(6,true),payload}}}
-    const result=await device.transferIn(inEp,64);if(result.status!=='ok'||!result.data)throw Error('USB read failed');rx=concat(rx,new Uint8Array(result.data.buffer,result.data.byteOffset,result.data.byteLength));
+// Pure wire codec, usable in an autonomous page or a Node VM test.
+const PagerCodec = (() => {
+  const spec = PAGER_PROTOCOL;
+  const magic = new TextEncoder().encode(spec.frame_magic);
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function encode(kind, id, payload) {
+    if (!Object.values(spec.frame_kinds).includes(kind)) throw Error('Invalid frame kind');
+    if (!Number.isInteger(id) || id < 0 || id > 0xffffffff) throw Error('Invalid request ID');
+    if (payload.length > spec.max_payload) throw Error('Payload exceeds protocol limit');
+    const frame = new Uint8Array(spec.header_size + payload.length);
+    frame.set(magic); frame[4] = spec.frame_version; frame[5] = kind;
+    const view = new DataView(frame.buffer);
+    view.setUint32(6, id, true); view.setUint16(10, payload.length, true);
+    view.setUint32(12, crc32(payload), true); frame.set(payload, spec.header_size);
+    return frame;
+  }
+  function decode(frame) {
+    if (frame.length < spec.header_size) throw Error('Truncated frame');
+    if (!magic.every((byte, i) => frame[i] === byte)) throw Error('Invalid frame magic');
+    if (frame[4] !== spec.frame_version) throw Error('Incompatible Pager protocol');
+    if (!Object.values(spec.frame_kinds).includes(frame[5])) throw Error('Invalid frame kind');
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    const length = view.getUint16(10, true);
+    if (length > spec.max_payload || frame.length !== spec.header_size + length) throw Error('Invalid frame length');
+    const payload = frame.slice(spec.header_size);
+    if (crc32(payload) !== view.getUint32(12, true)) throw Error('Invalid frame CRC');
+    return {kind: frame[5], id: view.getUint32(6, true), payload};
+  }
+  function decodeState(bytes) {
+    if (bytes.length < 10 || bytes[0] !== spec.state_schema) throw Error('Incompatible state schema');
+    if ([1,5,6,7,8,9].some(i => bytes[i] > 1) || bytes[2] > 6 ||
+        [3,4].some(i => bytes[i] !== 255 && bytes[i] >= spec.limits.slots)) throw Error('Invalid state fields');
+    let offset = 10;
+    const decoder = new TextDecoder('utf-8', {fatal: true});
+    function string(limit) {
+      if (offset >= bytes.length) throw Error('Truncated state');
+      const length = bytes[offset++];
+      if (length > limit || offset + length > bytes.length) throw Error('Invalid state string');
+      const value = decoder.decode(bytes.slice(offset, offset + length)); offset += length;
+      return value;
+    }
+    const names = Array.from({length: spec.limits.slots}, () => string(spec.limits.slot_name));
+    const addresses = Array.from({length: spec.limits.slots}, () => string(32));
+    const baseName = string(spec.limits.device_name);
+    if (offset !== bytes.length) throw Error('Trailing state bytes');
+    return {enabled: !!bytes[1], link: bytes[2], active: bytes[3] === 255 ? null : bytes[3],
+      connected: bytes[4] === 255 ? null : bytes[4], pairing: !!bytes[5],
+      bonds: Array.from(bytes.slice(6,9), Boolean), hidReady: !!bytes[9], names, addresses, baseName};
+  }
+  return {encode, decode, decodeState, crc32};
+})();
+
+// Each connection owns its reader, write queue, pending calls and USB resources.
+class PagerSession {
+  constructor({onEvent = () => {}, onDisconnect = () => {}, timeout = 12000} = {}) {
+    this.onEvent = onEvent;
+    this.onDisconnect = onDisconnect;
+    this.timeout = timeout;
+    this.session = null;
+    this.generation = 0;
+    this.nextId = 1;
+  }
+
+  get connected() { return !!this.session?.active; }
+
+  async connect(device) {
+    await this.disconnect();
+    const session = {
+      device, token: ++this.generation, active: true, claimed: false,
+      pending: new Map(), rx: new Uint8Array(), writes: Promise.resolve()
+    };
+    this.session = session;
+    try {
+      await device.open();
+      this.requireCurrent(session);
+      if (!device.configuration) await device.selectConfiguration(1);
+      this.requireCurrent(session);
+      for (const item of device.configuration.interfaces) {
+        const alt = item.alternate;
+        if (alt.interfaceClass !== 255) continue;
+        const input = alt.endpoints.find(e => e.direction === 'in');
+        const output = alt.endpoints.find(e => e.direction === 'out');
+        if (input && output) {
+          session.iface = item.interfaceNumber;
+          session.input = input.endpointNumber;
+          session.output = output.endpointNumber;
+          break;
+        }
+      }
+      if (session.iface === undefined) throw Error('Pager control interface not found');
+      await device.claimInterface(session.iface);
+      session.claimed = true;
+      this.requireCurrent(session);
+      this.read(session);
+    } catch (error) {
+      await this.cleanup(session, error);
+      throw error;
+    }
+  }
+
+  isCurrent(session) {
+    return session.active && this.session === session && session.token === this.generation;
+  }
+
+  requireCurrent(session) {
+    if (!this.isCurrent(session)) throw Error('USB disconnected');
+  }
+
+  async cleanup(session, error = Error('USB disconnected')) {
+    session.active = false;
+    if (this.session === session) this.session = null;
+    for (const pending of session.pending.values()) pending.reject(error);
+    session.pending.clear();
+    session.rx = new Uint8Array();
+    // A connect cancellation may reach cleanup again after open/claim completes.
+    if (session.claimed) {
+      session.claimed = false;
+      try { await session.device.releaseInterface(session.iface); } catch (_) {}
+    }
+    if (session.device.opened) {
+      try { await session.device.close(); } catch (_) {}
+    }
+  }
+
+  async disconnect() {
+    ++this.generation;
+    const session = this.session;
+    if (session) await this.cleanup(session);
+  }
+
+  async fail(session, error) {
+    if (!this.isCurrent(session)) return;
+    // Notify before awaits so a new connection cannot receive the old failure.
+    const cleanup = this.cleanup(session, error);
+    this.onDisconnect(error);
+    await cleanup;
+  }
+
+  call(payload) {
+    const session = this.session;
+    if (!session || !this.isCurrent(session)) return Promise.reject(Error('USB disconnected'));
+    let id = this.nextId >>> 0 || 1;
+    while (session.pending.has(id)) id = (id + 1) >>> 0 || 1;
+    this.nextId = (id + 1) >>> 0 || 1;
+    let frame;
+    try { frame = PagerCodec.encode(PAGER_PROTOCOL.frame_kinds.command, id, Uint8Array.from(payload)); }
+    catch (error) { return Promise.reject(error); }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!session.pending.has(id)) return;
+        this.fail(session, Error('Device response timeout'));
+      }, this.timeout);
+      session.pending.set(id, {
+        resolve: value => { clearTimeout(timer); resolve(value); },
+        reject: error => { clearTimeout(timer); reject(error); }
+      });
+      const send = async () => {
+        this.requireCurrent(session);
+        const result = await session.device.transferOut(session.output, frame);
+        this.requireCurrent(session);
+        if (result.status !== 'ok' || result.bytesWritten !== frame.length) {
+          throw Error('USB write failed');
+        }
+      };
+      session.writes = session.writes.then(send).catch(error => this.fail(session, error));
+    });
+  }
+
+  async receive(session) {
+    const header = PAGER_PROTOCOL.header_size;
+    while (true) {
+      this.requireCurrent(session);
+      if (session.rx.length >= header) {
+        const view = new DataView(session.rx.buffer, session.rx.byteOffset, session.rx.byteLength);
+        const length = view.getUint16(10, true);
+        if (length > PAGER_PROTOCOL.max_payload) throw Error('Invalid response length');
+        const total = header + length;
+        if (session.rx.length >= total) {
+          const raw = session.rx.slice(0, total);
+          session.rx = session.rx.slice(total);
+          return PagerCodec.decode(raw);
+        }
+      }
+      const result = await session.device.transferIn(session.input, 64);
+      this.requireCurrent(session);
+      if (result.status !== 'ok' || !result.data) throw Error('USB read failed');
+      const incoming = new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength);
+      const joined = new Uint8Array(session.rx.length + incoming.length);
+      joined.set(session.rx); joined.set(incoming, session.rx.length);
+      session.rx = joined;
+      if (joined.length > header + PAGER_PROTOCOL.max_payload + 64) throw Error('USB receive buffer overflow');
+    }
+  }
+
+  async read(session) {
+    try {
+      while (this.isCurrent(session)) {
+        const frame = await this.receive(session);
+        this.requireCurrent(session);
+        const kinds = PAGER_PROTOCOL.frame_kinds;
+        if (frame.kind === kinds.event) {
+          if (frame.id !== 0 || frame.payload.length !== 5 || ![1,255].includes(frame.payload[0])) {
+            throw Error('Invalid device event');
+          }
+          this.onEvent(frame.payload);
+          continue;
+        }
+        if (![kinds.response, kinds.error].includes(frame.kind) || frame.id === 0) {
+          throw Error('Unexpected response kind');
+        }
+        if (frame.kind === kinds.error && frame.payload.length !== 1) throw Error('Invalid device error');
+        const pending = session.pending.get(frame.id);
+        if (!pending) continue;
+        session.pending.delete(frame.id);
+        if (frame.kind === kinds.error) pending.reject(Error(PagerErrors[frame.payload[0]] || 'Unknown device error'));
+        else pending.resolve(frame.payload);
+      }
+    } catch (error) { await this.fail(session, error); }
   }
 }
-function call(payload){const req=requestId++;return new Promise((resolve,reject)=>{const timeout=setTimeout(()=>{pendingCalls.delete(req);reject(Error('Device response timeout'))},12000);pendingCalls.set(req,{resolve:value=>{clearTimeout(timeout);resolve(value)},reject:error=>{clearTimeout(timeout);reject(error)}});const send=async()=>{const result=await device.transferOut(outEp,makeFrame(req,payload));if(result.status!=='ok')throw Error('USB write failed')};writeChain=writeChain.then(send,send).catch(error=>{const pending=pendingCalls.get(req);pendingCalls.delete(req);pending?.reject(error)})})}
-async function readerLoop(){try{while(device?.opened){const answer=await receiveFrame();if(answer.kind===3){const overflow=answer.payload[0]===255,revision=answer.payload.length>=5?new DataView(answer.payload.buffer,answer.payload.byteOffset).getUint32(1,true):null,gap=revision!==null&&lastRevision!==null&&revision!==((lastRevision+1)>>>0);lastRevision=revision;clearTimeout(eventRefresh);eventRefresh=setTimeout(()=>refreshState(),overflow||gap?0:25);continue}const pending=pendingCalls.get(answer.id);if(!pending)continue;pendingCalls.delete(answer.id);const code=answer.payload[0];answer.kind===ERROR?pending.reject(Error(ERROR_TEXT[code]||`Device error ${code??'unknown'}`)):pending.resolve(answer.payload)}}catch(error){if(device){appendLog(error.message,'err');for(const pending of pendingCalls.values())pending.reject(error);pendingCalls.clear();disconnectUi()}}}
-function parseState(bytes){
-  if(bytes.length<10||bytes[0]!==5)throw Error('Unsupported state response');let offset=10;const readStrings=label=>{const values=[];for(let i=0;i<3;i++){if(offset>=bytes.length)throw Error(`Truncated ${label}`);const len=bytes[offset++];if(offset+len>bytes.length)throw Error(`Truncated ${label}`);values.push(DEC.decode(bytes.slice(offset,offset+len)));offset+=len}return values},names=readStrings('slot name'),addresses=readStrings('slot address');const baseLen=bytes[offset++];if(offset+baseLen>bytes.length)throw Error('Truncated device name');const baseName=DEC.decode(bytes.slice(offset,offset+baseLen));
-  return{enabled:!!bytes[1],link:bytes[2],active:bytes[3]===255?null:bytes[3],connected:bytes[4]===255?null:bytes[4],pairing:!!bytes[5],bonds:[!!bytes[6],!!bytes[7],!!bytes[8]],hidReady:!!bytes[9],names,addresses,baseName};
-}
-function setConnected(connected){$('usb_status').textContent=connected?'USB connected':'USB disconnected';$('usb_status').className='pill'+(connected?' on':'');$('connect').hidden=connected;$('disconnect').hidden=!connected;$('bluetooth_toggle').hidden=!connected;$('rename_device').hidden=!connected;for(const id of ['get_logs','reboot','factory_reset'])$(id).disabled=!connected;if(!connected){$('ble_status').textContent='Bluetooth unavailable';$('ble_status').className='pill';$('text').disabled=true;$('type').disabled=true;currentState=null;renderSlots()}}
-function stateText(state,slot){if(!state.enabled)return'Bluetooth off';if(state.connected===slot)return'Connected';if(state.active===slot&&state.pairing)return'Waiting for pairing';if(state.active===slot&&state.link===4)return'Connecting';if(state.active===slot&&state.bonds[slot])return'Saved · waiting';return state.bonds[slot]?'Saved':'Empty'}
-function renderSlots(){
-  const root=$('slots');root.replaceChildren();for(let slot=0;slot<3;slot++){const state=currentState,bonded=!!state?.bonds[slot],active=state?.active===slot,connected=state?.connected===slot,card=document.createElement('article');card.className='slot'+(active?' active':'')+(connected?' connected':'')+(active&&state?.pairing?' pairing':'')+(!bonded?' empty':'');const name=bonded?(state.names[slot]||state.addresses[slot]||'Unknown device'):'Empty slot',address=bonded?(state.addresses[slot]||'Unknown address'):'';card.innerHTML=`<div class="slot-top"><span class="slot-number">${escapeHtml(state?.baseName||'Pager')} ${slot+1}</span><span class="slot-state">${state?stateText(state,slot):'Unavailable'}</span></div><div class="slot-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div><div class="slot-address">${escapeHtml(address)}</div><div class="slot-actions"></div>`;const actions=card.querySelector('.slot-actions'),main=document.createElement('button');main.className='btn';main.disabled=!state||!state.enabled||(active&&bonded);main.textContent=bonded?(active?'Active':'Connect'):'Pair';main.onclick=()=>perform(`Activating slot ${slot+1}`,()=>call([ACTIVATE_SLOT,slot]));actions.append(main);if(bonded){const rename=document.createElement('button');rename.className='btn icon-btn ghost';rename.textContent='✎';rename.title='Rename paired device';rename.setAttribute('aria-label',`Rename slot ${slot+1}`);rename.onclick=()=>{renamingSlot=slot;$('slot_name_input').value=state.names[slot]||state.addresses[slot];$('slot_name_dialog').showModal();$('slot_name_input').focus()};actions.append(rename);const clear=document.createElement('button');clear.className='btn icon-btn ghost';clear.textContent='×';clear.title='Free slot';clear.setAttribute('aria-label',`Free slot ${slot+1}`);clear.onclick=async()=>{if(await askConfirm(`Free slot ${slot+1}`,`Delete the saved Bluetooth bond and alias for ${name}?`))perform(`Clearing slot ${slot+1}`,()=>call([CLEAR_SLOT,slot]))};actions.append(clear)}root.append(card)}
-}
-function escapeHtml(value){return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function askConfirm(title,message){return new Promise(resolve=>{const dialog=$('confirm_dialog');$('confirm_title').textContent=title;$('confirm_message').textContent=message;dialog.addEventListener('close',()=>resolve(dialog.returnValue==='default'),{once:true});dialog.showModal();$('confirm_accept').focus()})}
-function renderState(state){
-  currentState=state;const label=state.link===5&&!state.hidReady?'Connected · waiting for keyboard subscription':LINK[state.link]||'Unknown';$('ble_status').textContent=label;$('ble_status').className='pill'+(state.hidReady?' on':state.link===3||state.link===4||state.link===5||state.link===6?' busy':'');$('device_hint').textContent=state.enabled?(state.active===null?`${state.baseName} is on. Choose a slot.`:`${state.baseName} ${state.active+1} is active.`):`${state.baseName} Bluetooth radio is off.`;$('bluetooth_toggle').textContent=state.enabled?'Turn Bluetooth off':'Turn Bluetooth on';$('bluetooth_toggle').disabled=false;$('rename_device').hidden=false;$('rename_device').disabled=false;$('cancel_pairing').hidden=!state.pairing;$('cancel_pairing').disabled=!state.pairing;$('text').disabled=!state.hidReady;$('type').disabled=!state.hidReady;renderSlots();
-}
-async function refreshState(){if(!device?.opened)return;try{renderState(parseState(await call([GET_STATE])))}catch(error){appendLog(error.message,'err');disconnectUi()}}
-function schedulePoll(){}
-async function perform(label,operation){try{appendLog(label);await operation();await refreshState();appendLog('Done','ok')}catch(error){appendLog(error.message,'err')}finally{schedulePoll()}}
-function disconnectUi(){clearTimeout(eventRefresh);setConnected(false);device=null;iface=inEp=outEp=undefined;rx=new Uint8Array();lastRevision=null}
-async function disconnectUsb(){const current=device,claimed=iface;device=null;try{if(current?.opened&&claimed!==undefined)await current.releaseInterface(claimed)}catch(_){}try{if(current?.opened)await current.close()}catch(_){}for(const pending of pendingCalls.values())pending.reject(Error('USB disconnected'));pendingCalls.clear();disconnectUi();appendLog('Disconnected from Pager','warn')}
 
-$('connect').onclick=async()=>{try{device=await navigator.usb.requestDevice({filters:[{vendorId:VID,productId:PID}]});await device.open();if(!device.configuration)await device.selectConfiguration(1);for(const item of device.configuration.interfaces){const alt=item.alternate;if(alt.interfaceClass===255){const input=alt.endpoints.find(e=>e.direction==='in'),output=alt.endpoints.find(e=>e.direction==='out');if(input&&output){iface=item.interfaceNumber;inEp=input.endpointNumber;outEp=output.endpointNumber;break}}}if(iface===undefined)throw Error('Pager control interface not found');await device.claimInterface(iface);setConnected(true);appendLog('Connected to Pager','ok');readerLoop();await refreshState()}catch(error){appendLog(error.message,'err');disconnectUi()}};
-$('disconnect').onclick=disconnectUsb;
-navigator.usb?.addEventListener('disconnect',event=>{if(event.device===device){appendLog('Pager disconnected','warn');disconnectUi()}});
-$('bluetooth_toggle').onclick=()=>perform(currentState.enabled?'Turning Bluetooth off':'Turning Bluetooth on',()=>call([SET_BLUETOOTH,currentState.enabled?0:1]));
-$('cancel_pairing').onclick=()=>perform('Cancelling pairing',()=>call([CANCEL_PAIRING]));
-$('type').onclick=()=>{const text=$('text').value;if(!text)return;perform('Sending keyboard text',()=>call([TYPE_TEXT,...ENC.encode(text)])).then(()=>$('text').value='')};
-$('get_logs').onclick=async()=>{try{const text=DEC.decode(await call([GET_LOGS]));appendLog(text||'Device log is empty','ok')}catch(error){appendLog(error.message,'err')}};
-$('reboot').onclick=async()=>{if(await askConfirm('Reboot to bootloader','USB control will disconnect while Pager enters firmware update mode.'))perform('Rebooting to bootloader',()=>call([REBOOT]))};
-$('factory_reset').onclick=async()=>{if(await askConfirm('Factory reset','Erase all Bluetooth bonds, names and settings? This cannot be undone.'))perform('Restoring factory settings',()=>call([FACTORY_RESET]))};
-$('rename_device').onclick=()=>{$('rename_input').value=currentState?.baseName||'Pager';$('rename_dialog').showModal();$('rename_input').focus()};
-$('rename_save').onclick=event=>{event.preventDefault();const value=$('rename_input').value.trim(),encoded=ENC.encode(value);if(!value)return;if(encoded.length>24){appendLog('Base name must be at most 24 UTF-8 bytes','err');return}$('rename_dialog').close();perform('Renaming Pager',()=>call([SET_NAME,...encoded]))};
-$('slot_name_save').onclick=event=>{event.preventDefault();const value=$('slot_name_input').value.trim(),encoded=ENC.encode(value),slot=renamingSlot;if(slot===null||!value)return;if(encoded.length>32){appendLog('Slot name must be at most 32 UTF-8 bytes','err');return}$('slot_name_dialog').close();renamingSlot=null;perform(`Renaming slot ${slot+1}`,()=>call([SET_SLOT_NAME,slot,...encoded]))};
-renderSlots();
+const PagerErrors = {
+  1: 'Bad request', 2: 'Unsupported command', 3: 'Device busy or timed out',
+  4: 'Firmware update failed', 5: 'Keyboard is not ready or subscribed',
+  6: 'Text contains an unsupported character', 7: 'Bluetooth connection was lost',
+  8: 'Command queue is full'
+};
+
+// DOM control and operation scheduling, independent from the USB transport.
+class PagerApp {
+  constructor(doc, usb, options = {}) {
+    this.doc = doc;
+    this.usb = usb;
+    this.state = null;
+    this.busy = false;
+    this.refreshing = null;
+    this.refreshAgain = false;
+    this.refreshTimer = null;
+    this.revision = null;
+    this.epoch = 0;
+    this.renamingSlot = null;
+    this.confirmPending = false;
+    this.session = new PagerSession({
+      ...options,
+      onEvent: bytes => this.event(bytes),
+      onDisconnect: error => this.disconnected(error)
+    });
+    this.bind();
+    this.render();
+  }
+
+  element(id) { return this.doc.getElementById(id); }
+
+  log(message, kind = '') {
+    const root = this.element('log');
+    const row = this.doc.createElement('div');
+    row.className = kind;
+    // Limit both rows and one large GET_LOGS result. Never log commands or text.
+    row.textContent = `${new Date().toLocaleTimeString()}  ${String(message).slice(0, 4096)}`;
+    root.append(row);
+    while (root.childElementCount > 200) root.firstElementChild.remove();
+    root.scrollTop = root.scrollHeight;
+  }
+
+  disconnected(error) {
+    ++this.epoch;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
+    this.refreshAgain = false;
+    this.refreshing = null;
+    this.revision = null;
+    this.state = null;
+    this.renamingSlot = null;
+    for (const id of ['rename_dialog', 'slot_name_dialog', 'confirm_dialog']) {
+      if (this.element(id).open) this.element(id).close('cancel');
+    }
+    this.render();
+    if (error) this.log(error.message, 'err');
+  }
+
+  async disconnect() {
+    const cleanup = this.session.disconnect();
+    this.disconnected();
+    await cleanup;
+    this.log('Disconnected from Pager', 'warn');
+  }
+
+  event(bytes) {
+    const revision = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(1, true);
+    const gap = this.revision !== null && revision !== ((this.revision + 1) >>> 0);
+    this.revision = revision;
+    if (this.refreshTimer !== null && bytes[0] !== 255 && !gap) return;
+    clearTimeout(this.refreshTimer);
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = null;
+      this.refresh().catch(() => {});
+    }, bytes[0] === 255 || gap ? 0 : 25);
+  }
+
+  refresh() {
+    if (!this.session.connected) return Promise.resolve();
+    if (this.busy && !this.refreshing) {
+      this.refreshAgain = true;
+      return Promise.resolve();
+    }
+    if (this.refreshing) {
+      this.refreshAgain = true;
+      return this.refreshing;
+    }
+    const epoch = this.epoch;
+    this.refreshing = (async () => {
+      try {
+        do {
+          this.refreshAgain = false;
+          const bytes = await this.session.call([PAGER_PROTOCOL.commands.get_state]);
+          if (epoch !== this.epoch) return;
+          this.state = PagerCodec.decodeState(bytes);
+          this.render();
+        } while (this.refreshAgain && !this.busy && this.session.connected);
+      } catch (error) {
+        if (epoch === this.epoch) {
+          this.disconnected(error);
+          await this.session.disconnect();
+        }
+        throw error;
+      } finally {
+        if (epoch === this.epoch) this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
+  }
+
+  async operate(label, operation, {refresh = true} = {}) {
+    if (this.busy) return false;
+    this.busy = true;
+    const epoch = this.epoch;
+    this.render();
+    this.log(label);
+    let success = false;
+    try {
+      if (this.refreshing) await this.refreshing;
+      await operation();
+      success = epoch === this.epoch;
+      if (success) this.log('Done', 'ok');
+    } catch (error) {
+      this.log(error.message, 'err');
+    } finally {
+      this.busy = false;
+      this.render();
+      if (this.session.connected && (refresh || this.refreshAgain)) {
+        await this.refresh().catch(() => {});
+      }
+    }
+    return success;
+  }
+
+  async command(payload) {
+    const response = await this.session.call(payload);
+    if (response.length !== 1 || response[0] !== 0) throw Error('Invalid command acknowledgement');
+    return response;
+  }
+
+  nameBytes(value, limit, label) {
+    const text = value.trim();
+    const bytes = new TextEncoder().encode(text);
+    if (!text) throw Error(`${label} cannot be empty`);
+    if (bytes.length > limit) throw Error(`${label} must be at most ${limit} UTF-8 bytes`);
+    return bytes;
+  }
+
+  async confirm(title, message) {
+    if (this.confirmPending || this.busy || !this.session.connected) return false;
+    this.confirmPending = true;
+    const dialog = this.element('confirm_dialog');
+    const previous = this.doc.activeElement;
+    this.element('confirm_title').textContent = title;
+    this.element('confirm_message').textContent = message;
+    dialog.returnValue = 'cancel';
+    return new Promise(resolve => {
+      dialog.addEventListener('close', () => {
+        this.confirmPending = false;
+        previous?.focus();
+        resolve(dialog.returnValue === 'default' && this.session.connected);
+      }, {once: true});
+      dialog.showModal();
+      dialog.querySelector('button[value="cancel"]').focus();
+    });
+  }
+
+  openName(dialogId, inputId, value) {
+    if (this.busy || !this.session.connected) return;
+    const previous = this.doc.activeElement;
+    const dialog = this.element(dialogId);
+    dialog.returnValue = 'cancel';
+    this.element(inputId).value = value;
+    dialog.addEventListener('close', () => previous?.focus(), {once: true});
+    dialog.showModal();
+    this.element(inputId).focus();
+  }
+
+  render() {
+    const connected = this.session.connected;
+    const state = this.state;
+    const ready = connected && !!state && !this.busy;
+    this.element('usb_status').textContent = this.busy ? 'Working…' : connected ? 'USB connected' : 'USB disconnected';
+    this.element('usb_status').className = 'pill' + (this.busy ? ' busy' : connected ? ' on' : '');
+    this.element('connect').hidden = connected;
+    this.element('connect').disabled = this.busy || !this.usb;
+    this.element('disconnect').hidden = !connected;
+    this.element('disconnect').disabled = this.busy;
+    this.element('device_hint').textContent = !this.usb ? 'WebUSB requires a compatible browser such as Chrome.' : !state ? 'Connect Pager to manage Bluetooth.' : !state.enabled ? `${state.baseName} Bluetooth radio is off.` : state.active === null ? `${state.baseName} is on. Choose a slot.` : `${state.baseName} ${state.active + 1} is active.`;
+    const links = ['Bluetooth off','Ready','Advertising','Waiting for pairing','Connecting','Connected','Disconnecting'];
+    this.element('ble_status').textContent = !state ? 'Bluetooth unavailable' : state.link === 5 && !state.hidReady ? 'Connected · waiting for keyboard subscription' : links[state.link];
+    this.element('ble_status').className = 'pill' + (state?.hidReady ? ' on' : [3,4,5,6].includes(state?.link) ? ' busy' : '');
+    for (const id of ['bluetooth_toggle','rename_device','cancel_pairing']) {
+      this.element(id).hidden = !connected || (id === 'cancel_pairing' && !state?.pairing);
+      this.element(id).disabled = !ready;
+    }
+    this.element('bluetooth_toggle').textContent = state?.enabled ? 'Turn Bluetooth off' : 'Turn Bluetooth on';
+    for (const id of ['get_logs','reboot','factory_reset']) this.element(id).disabled = !ready;
+    for (const id of ['text','type']) this.element(id).disabled = !ready || !state.hidReady;
+    this.renderSlots(ready);
+  }
+
+  renderSlots(ready) {
+    const root = this.element('slots');
+    const focused = this.doc.activeElement?.id;
+    root.replaceChildren();
+    for (let slot = 0; slot < PAGER_PROTOCOL.limits.slots; slot++) {
+      const state = this.state;
+      const bonded = !!state?.bonds[slot];
+      const active = state?.active === slot;
+      const connected = state?.connected === slot;
+      const card = this.doc.createElement('article');
+      card.className = 'slot' + (active ? ' active' : '') + (connected ? ' connected' : '') + (active && state?.pairing ? ' pairing' : '') + (!bonded ? ' empty' : '');
+      const add = (className, text) => {
+        const node = this.doc.createElement('div'); node.className = className;
+        node.textContent = text; card.append(node); return node;
+      };
+      add('slot-number', `${state?.baseName || 'Pager'} ${slot + 1}`);
+      const status = !state ? 'Unavailable' : !state.enabled ? 'Bluetooth off' : connected ? 'Connected' : active && state.pairing ? 'Waiting for pairing' : active && state.link === 4 ? 'Connecting' : bonded ? 'Saved' : 'Empty';
+      add('slot-state', status);
+      const name = bonded ? state.names[slot] || state.addresses[slot] || 'Unknown device' : 'Empty slot';
+      add('slot-name', name).title = name;
+      add('slot-address', bonded ? state.addresses[slot] || 'Unknown address' : '');
+      const actions = add('slot-actions', '');
+      const button = (suffix, text, label, handler, disabled = false) => {
+        const node = this.doc.createElement('button');
+        node.id = `slot_${slot}_${suffix}`; node.className = 'btn';
+        node.textContent = text; node.setAttribute('aria-label', label);
+        node.disabled = !ready || disabled; node.onclick = handler; actions.append(node);
+      };
+      button('activate', bonded ? active ? 'Active' : 'Connect' : 'Pair', `${bonded ? 'Connect' : 'Pair'} slot ${slot + 1}`,
+        () => this.operate(`Activating slot ${slot + 1}`, () => this.command([PAGER_PROTOCOL.commands.activate_slot, slot])), !state?.enabled || (active && bonded));
+      if (bonded) {
+        button('rename', '✎', `Rename slot ${slot + 1}`, () => {
+          this.renamingSlot = slot;
+          this.openName('slot_name_dialog','slot_name_input', state.names[slot] || state.addresses[slot]);
+        });
+        button('clear', '×', `Free slot ${slot + 1}`, async () => {
+          if (await this.confirm(`Free slot ${slot + 1}`, 'Delete the saved Bluetooth bond and alias?')) {
+            await this.operate(`Clearing slot ${slot + 1}`, () => this.command([PAGER_PROTOCOL.commands.clear_slot, slot]));
+          }
+        });
+      }
+      root.append(card);
+    }
+    if (focused?.startsWith('slot_')) this.element(focused)?.focus();
+  }
+
+  bind() {
+    const cmd = PAGER_PROTOCOL.commands;
+    this.element('connect').onclick = () => {
+      if (this.busy) return;
+      ++this.epoch;
+      this.refreshing = null;
+      return this.operate('Connecting to Pager', async () => {
+        const device = await this.usb.requestDevice({
+          filters: [{vendorId: PAGER_PROTOCOL.application_vid, productId: PAGER_PROTOCOL.application_pid}]
+        });
+        try {
+          await this.session.connect(device);
+          // Initial state belongs to this connection, before exposing controls.
+          this.state = PagerCodec.decodeState(await this.session.call([cmd.get_state]));
+        } catch (error) {
+          await this.session.disconnect();
+          this.disconnected();
+          throw error;
+        }
+      });
+    };
+    this.element('disconnect').onclick = () => this.operate('Disconnecting', () => this.disconnect(), {refresh: false});
+    this.usb?.addEventListener('disconnect', event => {
+      if (event.device === this.session.session?.device) this.disconnect();
+    });
+    this.element('bluetooth_toggle').onclick = () => {
+      const enabled = this.state.enabled;
+      return this.operate(enabled ? 'Turning Bluetooth off' : 'Turning Bluetooth on', () => this.command([cmd.set_bluetooth_enabled, enabled ? 0 : 1]));
+    };
+    this.element('cancel_pairing').onclick = () => this.operate('Cancelling pairing', () => this.command([cmd.cancel_pairing]));
+    this.element('type').onclick = async () => {
+      const bytes = new TextEncoder().encode(this.element('text').value);
+      if (!bytes.length) return;
+      if (bytes.length > PAGER_PROTOCOL.limits.type_text) { this.log('Text must be at most 256 UTF-8 bytes', 'err'); return; }
+      if (await this.operate('Sending keyboard text', () => this.command([cmd.type_text, ...bytes]))) this.element('text').value = '';
+    };
+    this.element('get_logs').onclick = () => this.operate('Reading device log', async () => {
+      const bytes = await this.session.call([cmd.get_logs]);
+      this.log(new TextDecoder().decode(bytes) || 'Device log is empty', 'ok');
+    }, {refresh: false});
+    for (const [id, title, message, command] of [
+      ['reboot','Reboot to bootloader','USB will disconnect while Pager enters firmware update mode.',cmd.reboot_to_bootloader],
+      ['factory_reset','Factory reset','Erase all Bluetooth bonds, names and settings? This cannot be undone.',cmd.factory_reset]
+    ]) this.element(id).onclick = async () => {
+      if (await this.confirm(title, message)) await this.operate(title, () => this.command([command]), {refresh: false});
+    };
+    this.element('rename_device').onclick = () => this.openName('rename_dialog','rename_input',this.state.baseName);
+    for (const [button, dialog, input, limit, label] of [
+      ['rename_save','rename_dialog','rename_input',PAGER_PROTOCOL.limits.device_name,'Base name'],
+      ['slot_name_save','slot_name_dialog','slot_name_input',PAGER_PROTOCOL.limits.slot_name,'Slot name']
+    ]) this.element(button).onclick = event => {
+      event.preventDefault();
+      try {
+        const bytes = this.nameBytes(this.element(input).value, limit, label);
+        const payload = dialog === 'rename_dialog' ? [cmd.set_device_name,...bytes] : [cmd.set_slot_name,this.renamingSlot,...bytes];
+        this.element(dialog).close('default');
+        this.operate('Renaming', () => this.command(payload));
+      } catch (error) { this.log(error.message,'err'); this.element(input).focus(); }
+    };
+  }
+}
+
+const pagerApp = new PagerApp(document, navigator.usb);
 </script>
 </body>
 </html>

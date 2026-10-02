@@ -1,5 +1,9 @@
 #![no_std]
 
+pub mod codec;
+pub mod flash;
+pub mod transfer;
+
 pub const MAX_TRACKED_BLOCKS: usize = 4096;
 const BITMAP_WORDS: usize = MAX_TRACKED_BLOCKS / 32;
 
@@ -18,6 +22,7 @@ pub enum Observation {
     Duplicate,
 }
 
+#[derive(Clone)]
 pub struct UpdateTracker {
     received: [u32; BITMAP_WORDS],
     unique: u32,
@@ -35,6 +40,8 @@ impl UpdateTracker {
         }
     }
 
+    // Keep UF2 fields explicit until the shared layout codec is introduced.
+    #[allow(clippy::too_many_arguments)]
     pub fn inspect(
         &mut self,
         block_no: u32,
@@ -61,7 +68,7 @@ impl UpdateTracker {
         }
         if payload_len == 0
             || payload_len > payload_size as usize
-            || payload_len % 4 != 0
+            || !payload_len.is_multiple_of(4)
             || (block_no + 1 != total && payload_len != payload_size as usize)
             || target_addr
                 .checked_add(payload_len as u32)
@@ -205,3 +212,26 @@ mod tests {
         }
     }
 }
+
+/// Retention-register diagnostic code: RESETREAS bits 0..3 are preserved;
+/// bit 7 indicates an additional wake/debug source outside those reset bits.
+pub const fn reset_reason_code(raw: u32) -> u8 {
+    (raw & 0x0F) as u8 | if raw & !0x0F != 0 { 0x80 } else { 0 }
+}
+
+#[cfg(test)]
+mod reset_reason_tests {
+    #[test]
+    fn preserves_reset_causes_and_marks_other_sources() {
+        assert_eq!(super::reset_reason_code(0), 0);
+        for cause in [1, 2, 4, 8, 15] {
+            assert_eq!(super::reset_reason_code(cause), cause as u8);
+        }
+        assert_eq!(super::reset_reason_code(1 << 20), 0x80);
+        assert_eq!(super::reset_reason_code((1 << 16) | 2), 0x82);
+    }
+}
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests_flash;

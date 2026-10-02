@@ -1,23 +1,36 @@
 # Pager tests
 
-`make test` runs only host tests and requires no board. `make quality` adds
-formatting, Clippy, both ARM builds, signed UF2 verification and size/layout
-budgets.
+`make test` runs Rust and Python host tests without hardware. `make quality-fast`
+adds formatting/lint, host Clippy and the offline vendor inventory check.
+`make quality` also checks both ARM applications, bootloaders, updater and factory
+installer packages, signatures, partition/flash/static RAM budgets, generated
+protocol/golden vectors and autonomous UI behavior. Run with `--locked`; cached
+dependencies permit `CARGO_NET_OFFLINE=true` and a fresh `CARGO_TARGET_DIR`.
 
-Hardware tests are opt-in and serialized with an atomic lock file that does not
-depend on `fcntl`:
+`node --test tests/ui_behavior.cjs` runs the actual JS session/app modules with
+USB and DOM mocks. It covers lifecycle, asynchronous cancellation, pending cleanup,
+request wrap, malformed frames/state, coalesced refresh, UTF-8 validation, busy
+controls, bounded logs and dialog/focus behavior. It does not prove rendered HID
+or actual browser accessibility.
 
-```sh
-make test-hil       # prepared, non-destructive fixture
-make test-flash     # explicit destructive UF2/reboot tests
-make test-all       # both groups
-```
+Hardware is opt-in and uses a chip-specific POSIX `flock`, released by the OS
+when the owner exits. Set `PAGER_USB_SERIAL`; close browser WebUSB. Prepare slot
+1=Mac, slot 2=Android and slot 3=empty. **The prepared-slot contract test sends
+HID text** and requires a freshly confirmed safe focused Mac field. See
+[HIL_TESTING.md](../docs/HIL_TESTING.md) for exact commands and manual acceptance.
+A missing device or incorrect fixture is failure, not a skip. macOS GATT access
+has explicit platform limitations because the system owns HID.
 
-Prepare slot 1 paired to the Mac running pytest and slot 2 paired to another
-host. HIL must never erase or re-pair them. A missing board, Bluetooth failure or
-wrong fixture is a failure, not a skip. See `docs/HIL_TESTING.md` for the manual
-slot-2 typing acceptance that follows the automated run.
+Markers are `hil`, `smoke`, `contract`, `ble`, and `dfu`; destructive tests require
+`--run-hil --run-destructive`. DFU checks validate a trusted restore and the same
+chip's expected identity. `tools/test_bootloader_framing.py` preserves malformed
+transfer failures and complete recovery evidence. Storage/runtime fault images
+are development-only, explicitly prepared and separate from ordinary HIL.
 
-Markers are `hil`, `smoke`, `contract`, `ble`, and `dfu`. `dfu` additionally
-requires `--run-destructive`. USB selection must be unambiguous; set
-`PAGER_USB_SERIAL` or `SERIAL_PORT` when multiple boards are connected.
+`tools/test_usb_integrity.py` checks sustained full-size OUT traffic with a
+concurrent IN reader, matching every synthetic command/PING response and checking
+settings afterward. It is opt-in, serial-bound and sends no HID. The local nRF
+USB driver patch requires this check in addition to framing/events and rendered
+HID on both boards; the vendor hash inventory alone is not hardware evidence.
+
+The final gate includes the caller-owned stream-buffer lifecycle tests and exhaustive digest formatting comparison for all byte values. Hardware evidence and exact image scope are in [FINAL_VALIDATION.md](../docs/FINAL_VALIDATION.md).

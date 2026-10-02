@@ -24,7 +24,7 @@ timeout `3`, DFU failure `4`, HID not ready/subscribed `5`, unsupported characte
 | Opcode | Command | Payload / result |
 | ---: | --- | --- |
 | 1 | `PING` | returns `PONG` |
-| 2 | `GET_INFO` | protocol, boot model and build version |
+| 2 | `GET_INFO` | protocol, boot model, build version, board and image SHA-256 |
 | 3 | `GET_STATE` | schema below |
 | 4 | `ACTIVATE_SLOT` | slot `0..2`; empty slot starts pairing |
 | 5 | `CANCEL_PAIRING` | persistent Bluetooth Off |
@@ -52,9 +52,23 @@ They are followed by three length-prefixed aliases, three length-prefixed peer
 MAC addresses, and the length-prefixed common Pager name. A newly paired alias is
 its MAC address. Advertising names are `<name> 1`, `<name> 2`, `<name> 3`.
 
-Event payload `1 + revision:u32` means state changed. Payload starting with
-`0xFF` means event overflow. On connection, overflow, or a revision gap the client
+Event payload `1 + revision:u32` means state changed. Payload `0xFF + revision:u32` means event overflow. Both event types have exactly
+five bytes and request ID zero. On connection, overflow, or a revision gap the client
 must fetch a complete `GET_STATE` snapshot.
 
 CDC remains a diagnostic/recovery interface; WebUSB v5 is the canonical control
 protocol. Old opcodes and old frame versions are intentionally unsupported.
+
+The contract and UTF-8 byte limits come from `protocol.json`; the shared golden
+vectors exercise Rust, Python and JS. Decoders reject trailing/truncated state,
+invalid enum/boolean values and malformed UTF-8. The bounded stream accepts
+arbitrary splits, concatenated frames, garbage resynchronization and zero-length
+USB packets without treating a transfer boundary as a frame boundary.
+
+Bluetooth Off and On both clear the active slot; On does not reconnect until
+`ACTIVATE_SLOT`. Unsuccessful pairing expires after 120 seconds, turns Bluetooth
+off and persists that state. Each prepared advertising set refreshes current
+Flags and the complete local name before enable. The pairing state snapshot is
+not by itself proof of the on-air advertisement or host discovery.
+
+GET_INFO encodes its public image digest as exactly 64 lowercase hex digits, including leading zeros. The firmware uses direct fixed-width encoding; the response contract is unchanged.

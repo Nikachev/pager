@@ -179,7 +179,7 @@ dependencies = [
  "embedded-io 0.7.1",
  "embedded-io-async 0.7.0",
  "futures-intrusive",
- "heapless 0.9.3",
+ "heapless 0.8.0",
  "serde",
 ]
 
@@ -778,8 +778,6 @@ dependencies = [
 [[package]]
 name = "embassy-nrf"
 version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82051f67e8a06a8faebd183f62cfade184c96be68126c5f064abb8223a591ff1"
 dependencies = [
  "bitflags 2.13.1",
  "cfg-if",
@@ -1642,6 +1640,7 @@ dependencies = [
  "bt-hci",
  "cortex-m",
  "cortex-m-rt",
+ "critical-section",
  "defmt 1.1.1",
  "defmt-rtt",
  "embassy-executor",
@@ -1665,6 +1664,10 @@ dependencies = [
 [[package]]
 name = "pager-bootloader-core"
 version = "0.1.0"
+dependencies = [
+ "ed25519-compact",
+ "sha2",
+]
 
 [[package]]
 name = "panic-probe"
@@ -2604,6 +2607,7 @@ version = "0.1.0"
 dependencies = [
  "ed25519-compact",
  "ed25519-dalek",
+ "pager-bootloader-core",
  "pkcs8",
  "serde_json",
  "sha2",

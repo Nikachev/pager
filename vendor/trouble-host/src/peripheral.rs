@@ -330,15 +330,22 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
         })
     }
 
-    /// Enables an extended advertising set that was configured previously.
+    /// Refresh data and enable a prepared set without rewriting parameters/address.
     pub async fn advertise_ext_prepared(
         &mut self,
         handle: u8,
         params: &AdvertisementParameters,
+        data: Advertisement<'_>,
     ) -> Result<Advertiser<'d, C, P>, BleHostError<C::Error>>
     where
-        C: for<'t> ControllerCmdSync<LeSetExtAdvEnable<'t>>,
+        C: for<'t> ControllerCmdSync<LeSetExtAdvEnable<'t>>
+            + for<'t> ControllerCmdSync<LeSetExtAdvData<'t>>
+            + for<'t> ControllerCmdSync<LeSetExtScanResponseData<'t>>,
     {
+        if !data.is_valid() {
+            return Err(BleHostError::BleHost(Error::InvalidValue));
+        }
+        let data: RawAdvertisement<'_> = data.into();
         let host = &self.host;
         let drop = crate::host::OnDrop::new(|| {
             host.advertise_command_state().cancel(true);
@@ -346,6 +353,22 @@ impl<'d, C: Controller, P: PacketPool> Peripheral<'d, C, P> {
         host.request_operation(host.advertise_command_state(), true)
             .await;
         host.advertise_state().reset();
+        // request_operation waits for the prior set to stop. Always refresh the
+        // discovery flags and name before enabling, including after bond reset.
+        host.command(LeSetExtAdvData::new(
+            AdvHandle::new(handle),
+            Operation::Complete,
+            params.fragment,
+            data.adv_data,
+        ))
+        .await?;
+        host.command(LeSetExtScanResponseData::new(
+            AdvHandle::new(handle),
+            Operation::Complete,
+            params.fragment,
+            data.scan_data,
+        ))
+        .await?;
         let handles = [AdvSet {
             adv_handle: AdvHandle::new(handle),
             duration: bt_hci_duration(

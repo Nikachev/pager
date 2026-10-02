@@ -113,7 +113,27 @@ pub enum PageControl {
 
 #[allow(dead_code)]
 fn parse_cb(cb: &[u8]) -> ScsiCommand {
-    match cb[0] {
+    let Some(&opcode) = cb.first() else {
+        return ScsiCommand::Unknown;
+    };
+    let required = match opcode {
+        TEST_UNIT_READY | START_STOP_UNIT | INQUIRY | REQUEST_SENSE | MODE_SENSE_6 => 6,
+        SYNCHRONIZE_CACHE_10
+        | READ_CAPACITY_10
+        | READ_10
+        | WRITE_10
+        | MODE_SENSE_10
+        | READ_FORMAT_CAPACITIES => 10,
+        READ_CAPACITY_16 | READ_16 => 16,
+        _ => return ScsiCommand::Unknown,
+    };
+    if cb.len() < required {
+        return ScsiCommand::Unknown;
+    }
+    if opcode == READ_CAPACITY_16 && cb[1] & 0x1F != 0x10 {
+        return ScsiCommand::Unknown;
+    }
+    match opcode {
         TEST_UNIT_READY => ScsiCommand::TestUnitReady,
         START_STOP_UNIT => ScsiCommand::StartStop {
             start: cb[4] & 0x01 != 0,
@@ -133,34 +153,18 @@ fn parse_cb(cb: &[u8]) -> ScsiCommand {
         READ_CAPACITY_16 => ScsiCommand::ReadCapacity16 {
             alloc_len: u32::from_be_bytes([cb[10], cb[11], cb[12], cb[13]]),
         },
-        READ_10 => {
-            let be_lba = u32::from_be_bytes([cb[2], cb[3], cb[4], cb[5]]);
-            let le_lba = u32::from_le_bytes([cb[2], cb[3], cb[4], cb[5]]);
-            let lba = if be_lba < 32768 { be_lba } else { le_lba };
-            let be_len = u16::from_be_bytes([cb[7], cb[8]]);
-            let le_len = u16::from_le_bytes([cb[7], cb[8]]);
-            let len = if be_len < 4000 { be_len } else { le_len };
-            ScsiCommand::Read {
-                lba: lba as u64,
-                len: len as u64,
-            }
-        }
+        READ_10 => ScsiCommand::Read {
+            lba: u32::from_be_bytes(cb[2..6].try_into().unwrap()) as u64,
+            len: u16::from_be_bytes(cb[7..9].try_into().unwrap()) as u64,
+        },
         READ_16 => ScsiCommand::Read {
             lba: u64::from_be_bytes((&cb[2..10]).try_into().unwrap()),
             len: u32::from_be_bytes((&cb[10..14]).try_into().unwrap()) as u64,
         },
-        WRITE_10 => {
-            let be_lba = u32::from_be_bytes([cb[2], cb[3], cb[4], cb[5]]);
-            let le_lba = u32::from_le_bytes([cb[2], cb[3], cb[4], cb[5]]);
-            let lba = if be_lba < 32768 { be_lba } else { le_lba };
-            let be_len = u16::from_be_bytes([cb[7], cb[8]]);
-            let le_len = u16::from_le_bytes([cb[7], cb[8]]);
-            let len = if be_len < 4000 { be_len } else { le_len };
-            ScsiCommand::Write {
-                lba: lba as u64,
-                len: len as u64,
-            }
-        }
+        WRITE_10 => ScsiCommand::Write {
+            lba: u32::from_be_bytes(cb[2..6].try_into().unwrap()) as u64,
+            len: u16::from_be_bytes(cb[7..9].try_into().unwrap()) as u64,
+        },
         MODE_SENSE_6 => ScsiCommand::ModeSense6 {
             dbd: (cb[1] & 0b00001000) != 0,
             page_control: PageControl::try_from_primitive(cb[2] >> 6).unwrap(),
@@ -308,5 +312,61 @@ where
 
     fn control_in(&mut self, xfer: ControlIn<Bus>) {
         self.transport.control_in(xfer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn large_lba_and_count_remain_big_endian() {
+        for opcode in [READ_10, WRITE_10] {
+            let mut command = [0; 10];
+            command[0] = opcode;
+            command[2..6].copy_from_slice(&65536u32.to_be_bytes());
+            command[7..9].copy_from_slice(&4096u16.to_be_bytes());
+            match parse_cb(&command) {
+                ScsiCommand::Read { lba, len } | ScsiCommand::Write { lba, len } => {
+                    assert_eq!(lba, 65536);
+                    assert_eq!(len, 4096);
+                }
+                _ => panic!("valid command refused"),
+            }
+            command[2..6].copy_from_slice(&u32::MAX.to_be_bytes());
+            command[7..9].copy_from_slice(&u16::MAX.to_be_bytes());
+            assert!(matches!(
+                parse_cb(&command),
+                ScsiCommand::Read {
+                    lba: 4294967295,
+                    len: 65535
+                } | ScsiCommand::Write {
+                    lba: 4294967295,
+                    len: 65535
+                }
+            ));
+        }
+    }
+    #[test]
+    fn every_truncated_cdb_is_rejected_without_indexing() {
+        assert!(matches!(parse_cb(&[]), ScsiCommand::Unknown));
+        for (opcode, length) in [
+            (READ_10, 10),
+            (WRITE_10, 10),
+            (READ_16, 16),
+            (READ_CAPACITY_16, 16),
+            (INQUIRY, 6),
+            (MODE_SENSE_6, 6),
+            (MODE_SENSE_10, 10),
+            (START_STOP_UNIT, 6),
+        ] {
+            let mut command = [0; 16];
+            command[0] = opcode;
+            for truncated in 1..length {
+                assert!(matches!(
+                    parse_cb(&command[..truncated]),
+                    ScsiCommand::Unknown
+                ));
+            }
+        }
     }
 }

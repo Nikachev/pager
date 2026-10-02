@@ -11,7 +11,22 @@ const FAULT_MAGIC: u8 = 0xE1;
 const NRF_POWER_GPREGRET: *mut u32 = 0x4000_051C as *mut u32;
 const NRF_POWER_RESETREAS: *mut u32 = 0x4000_0400 as *mut u32;
 
-pub fn check_and_set_double_tap() -> bool {
+/// Capture before double-tap clears RESETREAS. GPREGRET2 is dedicated to
+/// diagnostic handoff and is consumed/cleared by the application.
+pub fn capture_reset_reason() -> u32 {
+    let reason = unsafe { core::ptr::read_volatile(NRF_POWER_RESETREAS) };
+    // Both registers are nRF52840 POWER MMIO; GPREGRET2 retains eight bits.
+    unsafe {
+        core::ptr::write_volatile(
+            0x4000_0520 as *mut u32,
+            pager_bootloader_core::reset_reason_code(reason) as u32,
+        );
+        core::ptr::write_volatile(NRF_POWER_RESETREAS, reason);
+    }
+    reason
+}
+
+pub fn check_and_set_double_tap(resetreas: u32) -> bool {
     // GPREGRET is 8-bit — only bits [7:0] are retained across reset
     let val = (unsafe { core::ptr::read_volatile(NRF_POWER_GPREGRET) } & 0xFF) as u8;
 
@@ -19,11 +34,6 @@ pub fn check_and_set_double_tap() -> bool {
         unsafe { core::ptr::write_volatile(NRF_POWER_GPREGRET, 0) };
         true
     } else {
-        let resetreas = unsafe { core::ptr::read_volatile(NRF_POWER_RESETREAS) };
-        if resetreas != 0 {
-            unsafe { core::ptr::write_volatile(NRF_POWER_RESETREAS, resetreas) };
-        }
-
         // Only enter 500ms window if reset was triggered by physical RESET pin (bit 0)
         let is_pin_reset = (resetreas & 0x01) != 0;
 

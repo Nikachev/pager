@@ -29,5 +29,19 @@
     "set_device_name": 11,
     "set_slot_name": 12,
     "factory_reset": 13
+  },
+  "header_size": 16,
+  "frame_kinds": {
+    "command": 1,
+    "response": 2,
+    "event": 3,
+    "dfu_data": 4,
+    "error": 5
+  },
+  "limits": {
+    "slots": 3,
+    "device_name": 24,
+    "slot_name": 32,
+    "type_text": 256
   }
 }

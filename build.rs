@@ -29,42 +29,54 @@ fn main() {
     .unwrap();
 
     let protocol: Value = serde_json::from_slice(&fs::read("protocol.json").unwrap()).unwrap();
-    let commands = &protocol["commands"];
-    let errors = &protocol["errors"];
-    let command = |name: &str| number(commands, name);
-    let error = |name: &str| number(errors, name);
-    fs::write(
-        out.join("protocol_spec.rs"),
-        format!(
-            "pub const FRAME_VERSION: u8 = {frame_version};\npub const STATE_SCHEMA: u8 = {state_schema};\npub const MAX_PAYLOAD: usize = {max_payload};\npub const APPLICATION_VID: u16 = {vid};\npub const APPLICATION_PID: u16 = {pid};\npub const ERROR_BAD_REQUEST: u8 = {error_bad_request};\npub const ERROR_UNSUPPORTED_COMMAND: u8 = {error_unsupported};\npub const ERROR_BUSY: u8 = {error_busy};\npub const ERROR_HID_NOT_READY: u8 = {error_hid_not_ready};\npub const ERROR_UNSUPPORTED_CHARACTER: u8 = {error_unsupported_character};\npub const ERROR_CONNECTION_LOST: u8 = {error_connection_lost};\npub const ERROR_QUEUE_FULL: u8 = {error_queue_full};\npub const PING: u8 = {ping};\npub const GET_INFO: u8 = {get_info};\npub const GET_STATE: u8 = {get_state};\npub const ACTIVATE_SLOT: u8 = {activate};\npub const CANCEL_PAIRING: u8 = {cancel};\npub const SET_BLUETOOTH_ENABLED: u8 = {set_ble};\npub const CLEAR_SLOT: u8 = {clear};\npub const TYPE_TEXT: u8 = {type_text};\npub const REBOOT_TO_BOOTLOADER: u8 = {reboot};\npub const GET_LOGS: u8 = {logs};\npub const SET_DEVICE_NAME: u8 = {set_name};\npub const SET_SLOT_NAME: u8 = {set_slot_name};\npub const FACTORY_RESET: u8 = {factory_reset};\n",
-            frame_version = number(&protocol, "frame_version"),
-            state_schema = number(&protocol, "state_schema"),
-            max_payload = number(&protocol, "max_payload"),
-            vid = number(&protocol, "application_vid"),
-            pid = number(&protocol, "application_pid"),
-            error_bad_request = error("bad_request"),
-            error_unsupported = error("unsupported_command"),
-            error_busy = error("busy"),
-            error_hid_not_ready = error("hid_not_ready"),
-            error_unsupported_character = error("unsupported_character"),
-            error_connection_lost = error("connection_lost"),
-            error_queue_full = error("queue_full"),
-            ping = command("ping"),
-            get_info = command("get_info"),
-            get_state = command("get_state"),
-            activate = command("activate_slot"),
-            cancel = command("cancel_pairing"),
-            set_ble = command("set_bluetooth_enabled"),
-            clear = command("clear_slot"),
-            type_text = command("type_text"),
-            reboot = command("reboot_to_bootloader"),
-            logs = command("get_logs"),
-            set_name = command("set_device_name"),
-            set_slot_name = command("set_slot_name"),
-            factory_reset = command("factory_reset"),
-        ),
-    )
-    .unwrap();
+    let mut generated = String::new();
+    for (key, ty, maximum) in [
+        ("frame_version", "u8", 255),
+        ("state_schema", "u8", 255),
+        ("max_payload", "usize", 65535),
+        ("header_size", "usize", 65535),
+        ("application_vid", "u16", 65535),
+        ("application_pid", "u16", 65535),
+    ] {
+        let value = number(&protocol, key);
+        assert!(value > 0 && value <= maximum, "invalid protocol {key}");
+        generated.push_str(&format!(
+            "pub const {}: {ty} = {value};\n",
+            key.to_uppercase()
+        ));
+    }
+    let magic = protocol["frame_magic"].as_str().expect("frame magic");
+    assert!(magic.is_ascii() && magic.len() == 4);
+    assert_eq!(number(&protocol, "header_size"), 16);
+    generated.push_str(&format!("pub const FRAME_MAGIC: [u8; 4] = *b{magic:?};\n"));
+    for (section, prefix) in [
+        ("commands", ""),
+        ("errors", "ERROR_"),
+        ("frame_kinds", "KIND_"),
+    ] {
+        let mut seen = std::collections::BTreeSet::new();
+        for (name, value) in protocol[section].as_object().expect("protocol table") {
+            let value = value.as_u64().expect("numeric protocol value");
+            assert!(
+                value > 0 && value <= 255 && seen.insert(value),
+                "invalid/duplicate {section}"
+            );
+            generated.push_str(&format!(
+                "pub const {prefix}{}: u8 = {value};\n",
+                name.to_uppercase()
+            ));
+        }
+    }
+    for (name, value) in protocol["limits"].as_object().expect("limits") {
+        let value = value.as_u64().expect("numeric limit");
+        assert!(value > 0 && value <= number(&protocol, "max_payload"));
+        generated.push_str(&format!(
+            "pub const LIMIT_{}: usize = {value};\n",
+            name.to_uppercase()
+        ));
+    }
+    assert_eq!(number(&protocol["limits"], "slots"), 3);
+    fs::write(out.join("protocol_spec.rs"), generated).unwrap();
     fs::write(
         out.join("layout.rs"),
         format!(
@@ -81,6 +93,14 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=layout.json");
     println!("cargo:rerun-if-changed=protocol.json");
+    println!("cargo:rerun-if-env-changed=PAGER_FAULT_INJECTION");
+    println!("cargo:rerun-if-env-changed=PAGER_USB_TRACE");
+    if env::var("PAGER_USB_TRACE").as_deref() == Ok("1") {
+        println!("cargo:rustc-env=PAGER_USB_TRACE=1");
+    }
+    if env::var("PAGER_FAULT_INJECTION").as_deref() == Ok("1") {
+        println!("cargo:rustc-env=PAGER_FAULT_INJECTION=1");
+    }
     println!("cargo:rerun-if-env-changed=PAGER_SKIP_WATCHDOG_FEED");
     println!(
         "cargo:rustc-env=PAGER_SKIP_WATCHDOG_FEED={}",

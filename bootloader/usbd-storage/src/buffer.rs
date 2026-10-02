@@ -71,6 +71,16 @@ impl<T: BorrowMut<[u8]>> Buffer<T> {
         })
     }
 
+    /// Read only the destination capacity; retain the unconsumed suffix.
+    pub fn read_into(&mut self, dst: &mut [u8]) -> usize {
+        self.read(|bytes| {
+            let length = min(dst.len(), bytes.len());
+            dst[..length].copy_from_slice(&bytes[..length]);
+            Ok::<usize, ()>(length)
+        })
+        .unwrap()
+    }
+
     pub fn clean(&mut self) {
         self.rpos = 0;
         self.wpos = 0;
@@ -78,13 +88,7 @@ impl<T: BorrowMut<[u8]>> Buffer<T> {
 
     fn shift(&mut self) {
         if self.rpos != self.wpos {
-            unsafe {
-                core::ptr::copy(
-                    &self.inner.borrow()[self.rpos] as *const u8,
-                    &mut self.inner.borrow_mut()[0] as *mut u8,
-                    self.available_read(),
-                )
-            }
+            self.inner.borrow_mut().copy_within(self.rpos..self.wpos, 0);
             self.wpos -= self.rpos;
             self.rpos = 0;
         } else {
@@ -169,5 +173,19 @@ mod tests {
         assert_eq!(10, buf.write(&DATA[..10]));
         assert_eq!(10, buf.available_read());
         assert_eq!(0, buf.available_write());
+    }
+    #[test]
+    fn partial_destinations_retain_every_remaining_byte() {
+        let mut buf = Buffer::new([0u8; 10]);
+        buf.write(&DATA);
+        let mut first = [0; 3];
+        assert_eq!(buf.read_into(&mut first), 3);
+        assert_eq!(first, [0, 1, 2]);
+        assert_eq!(buf.read_into(&mut []), 0);
+        let mut rest = [255; 10];
+        assert_eq!(buf.read_into(&mut rest), 7);
+        assert_eq!(&rest[..7], &DATA[3..]);
+        assert_eq!(&rest[7..], &[255; 3]);
+        assert_eq!(buf.available_read(), 0);
     }
 }

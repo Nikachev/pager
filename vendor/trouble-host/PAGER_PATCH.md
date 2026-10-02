@@ -14,8 +14,16 @@ maps slots 1–3 to advertising handles 0–2, avoiding changes to the identity
 address of an existing nRF-SDC advertising set.
 
 `Peripheral::advertise_ext_prepared()` re-enables such a set without rewriting
-its parameters or identity after it has previously accepted a connection.
+its parameters or identity after it has previously accepted a connection. It
+refreshes advertising and scan-response data before Enable, so pairing
+discoverability flags and renamed local names never remain from an older use.
 
 Pager also fixes the feature gate on the security command mutex imports in
 `host.rs`; security in a peripheral-only build uses that mutex and must not
 require Trouble's unrelated `central` feature.
+
+The complete file/hash inventory is `vendor/PATCHES.json`, with maintenance and
+regression requirements in `docs/VENDOR_PATCHES.md`. The host-macros copy has no
+semantic delta from the same commit; the Rust copies also contain formatting and
+comment whitespace changes. The advertising, host-address, and mutex feature
+patches above are the complete semantic Trouble changes at this checkpoint.

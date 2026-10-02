@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
-"""
-Pager USB Mass Storage UF2 Flasher CLI
+"""Validate, transfer and verify a signed Pager application on one selected chip."""
 
-Transfers signed UF2 firmware blocks over standard USB Mass Storage (SCSI Bulk-Only Transport)
-to the Pager Bootloader on nRF52840. Auto-reboots main application if needed.
-"""
-
-import sys
-import time
-import os
-import glob
-import struct
 import argparse
-import subprocess
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import time
+
 import usb.core
 import usb.util
 import usb.backend.libusb1
@@ -22,277 +18,261 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pager_tools.usb import PagerUsbClient, find_application
+from pager_tools import msc
+from pager_tools.hardware import hardware_lock
+from pager_tools.package import load_application_package, validate_uf2
+from pager_tools.usb import PagerUsbClient, find_application, parse_info, normalize_serial
 
 DEFAULT_VID = 0x239A
 DEFAULT_PID = 0x0029
-APP_VID = 0x1209
-APP_PID = 0x0002
 
-def copy_to_volume(src, mount_path):
-    dst_path = os.path.join(mount_path, "pager.uf2")
-    time.sleep(0.5)  # Allow macOS volume mount to stabilize
-    for attempt in range(5):
-        try:
-            res = subprocess.run(["cp", src, dst_path], capture_output=True, timeout=8)
-            if res.returncode == 0:
-                return True
-            print(f"copy attempt {attempt + 1} failed: {res.stderr.decode(errors='replace').strip()}")
-        except (OSError, subprocess.SubprocessError) as error:
-            print(f"copy attempt {attempt + 1} failed: {error}")
-        # A successful update resets and unmounts the volume before macOS may
-        # report cp completion. The caller proves success through GET_INFO.
-        if not os.path.exists(mount_path):
-            return False
-        time.sleep(0.5)
-    return False
+# A separate process makes the deadline effective even when filesystem I/O blocks.
+# Exactly one transfer is attempted; a timeout must not restart a partial update.
+COPY_WORKER = """
+import os, sys
+with open(sys.argv[1], 'rb') as src, open(sys.argv[2], 'wb', buffering=0) as dst:
+    while chunk := src.read(16 * 1024):
+        offset = 0
+        while offset < len(chunk):
+            written = dst.write(chunk[offset:])
+            if not written:
+                raise OSError('zero-byte UF2 write')
+            offset += written
+        os.fsync(dst.fileno())
+"""
+
+
+def copy_to_volume(src, mount_path, timeout=90):
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", COPY_WORKER, str(src), str(Path(mount_path) / "pager.uf2")],
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"UF2 copy exceeded {timeout}s; no automatic retry", flush=True)
+        return False
+    if result.returncode:
+        print(f"UF2 copy interrupted: {result.stderr.decode(errors='replace').strip()}", flush=True)
+    return result.returncode == 0
+
 
 def get_backend():
     try:
         import libusb_package
+
         backend = libusb_package.get_libusb1_backend()
         if backend is not None:
             return backend
-    except Exception:
+    except ImportError, OSError:
         pass
-
-    for path in ["/opt/homebrew/lib/libusb-1.0.dylib", "/usr/local/lib/libusb-1.0.dylib", "/usr/lib/libusb-1.0.dylib"]:
-        if os.path.exists(path):
-            try:
-                backend = usb.backend.libusb1.get_backend(find_library=lambda x: path)
-                if backend is not None:
-                    return backend
-            except Exception:
-                pass
-    return None
-
-def trigger_reboot_if_in_main_app():
-    try:
-        backend = get_backend()
-        device = find_application(backend=backend, serial=os.getenv("PAGER_USB_SERIAL"))
-        if device is None:
-            return False
-        print("🔄 Device is running the application. Requesting bootloader over WebUSB...")
-        with PagerUsbClient(device) as client:
-            client.call(bytes([9]))
-        print("⏳ Waiting for Pager Bootloader to enumerate...")
-        return True
-    except (OSError, usb.core.USBError, RuntimeError) as error:
-        print(f"⚠️ Failed to request bootloader over WebUSB: {error}")
-        return False
-
-def send_scsi_write_10(ep_out, ep_in, tag, lba, block_data):
-    scsi_write_10_cb = struct.pack(">BBIBHB", 0x2A, 0, lba, 0, 1, 0) + b"\x00" * 6
-    cbw = struct.pack("<4sIIBBB", b"USBC", tag, len(block_data), 0x00, 0, 10) + scsi_write_10_cb
-    ep_out.write(cbw, timeout=2000)
-    ep_out.write(block_data, timeout=2000)
-    return ep_in.read(13, timeout=2000)
-
-SUPPORTED_DEVICES = [(DEFAULT_VID, DEFAULT_PID)]
+    backend = usb.backend.libusb1.get_backend()
+    if backend is None:
+        raise RuntimeError("libusb backend unavailable; install tests/requirements.txt")
+    return backend
 
 
-def wait_for_application(backend=None, timeout=15.0):
+def find_device(backend=None, vid=DEFAULT_VID, pid=DEFAULT_PID, serial=None):
+    devices = list(usb.core.find(find_all=True, idVendor=vid, idProduct=pid, backend=backend) or [])
+    if serial:
+        devices = [
+            d for d in devices if normalize_serial(d.serial_number) == normalize_serial(serial)
+        ]
+    if len(devices) > 1:
+        raise RuntimeError("multiple bootloaders found; select --serial")
+    if not devices:
+        return None, None, None
+    return devices[0], vid, pid
+
+
+def find_volume(serial):
+    roots = [Path("/Volumes")]
+    user = os.getenv("USER")
+    if user:
+        roots.extend([Path("/media") / user, Path("/run/media") / user])
+    matches = []
+    target = normalize_serial(serial)
+    # v0.2.0 INFO_UF2 swaps device-ID halves; USB descriptors remain canonical.
+    legacy = target[8:] + target[:8]
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.iterdir():
+            info = path / "INFO_UF2.TXT"
+            if not info.is_file():
+                continue
+            fields = parse_info(
+                info.read_text().replace("\\r\\n", "\n"), separator="\n", delimiter=": "
+            )
+            if fields.get("Board-ID") == "NRF52840-PAGER" and normalize_serial(
+                fields.get("Serial", "")
+            ) in (target, legacy):
+                matches.append(path)
+    if len(matches) > 1:
+        raise RuntimeError("multiple boot volumes match the chip")
+    return matches[0] if matches else None
+
+
+def wait_for_application(backend=None, serial=None, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if find_application(backend=backend, serial=os.getenv("PAGER_USB_SERIAL")) is not None:
-            return True
+        try:
+            if find_application(backend=backend, serial=serial) is not None:
+                return True
+        except usb.core.USBError:
+            # USB descriptors can be temporarily unavailable during enumeration.
+            pass
         time.sleep(0.25)
     return False
 
 
-def verify_running_application(backend=None):
-    device = find_application(backend=backend, serial=os.getenv("PAGER_USB_SERIAL"))
+def verify_running_application(backend, serial, metadata):
+    device = find_application(backend=backend, serial=serial)
     if device is None:
-        raise RuntimeError("Pager application did not enumerate")
+        raise RuntimeError("selected Pager application did not enumerate")
     with PagerUsbClient(device) as client:
-        info = client.get_info()
-    if "protocol=5" not in info:
-        raise RuntimeError(f"unexpected Pager GET_INFO: {info}")
-    version_path = REPO_ROOT / "dist" / "version.txt"
-    if version_path.exists():
-        expected = version_path.read_text(encoding="utf-8").strip()
-        if f"version={expected}" not in info:
-            raise RuntimeError(f"Pager booted {info}, expected version={expected}")
-    print(f"✅ Verified running application: {info}")
+        fields = parse_info(client.get_info())
+    for field, expected in [
+        ("protocol", str(metadata["protocol"])),
+        ("version", metadata["version"]),
+        ("board", metadata["board"]),
+        ("image_sha256", metadata["image_sha256"]),
+    ]:
+        if fields.get(field) != expected:
+            raise RuntimeError(
+                f"running application {field}={fields.get(field)!r}, expected {expected!r}"
+            )
+    print(
+        f"Verified {normalize_serial(serial)}: {metadata['board']} {metadata['version']}",
+        flush=True,
+    )
 
 
-def copy_and_verify(filename, mount_path, backend=None):
-    copy_reported_success = copy_to_volume(filename, mount_path)
-    if not wait_for_application(backend):
-        if copy_reported_success:
-            raise RuntimeError("UF2 copied, but Pager application did not enumerate")
-        raise RuntimeError("UF2 copy failed and Pager application did not enumerate")
-    verify_running_application(backend)
-    if not copy_reported_success:
-        print("ℹ️ macOS ended the copy while Pager reset; GET_INFO confirmed success.")
+def copy_and_verify(filename, mount_path, backend, serial, metadata):
+    copied = copy_to_volume(filename, mount_path)
+    if not wait_for_application(backend, serial):
+        raise RuntimeError(
+            "UF2 copied, but application did not enumerate"
+            if copied
+            else "UF2 copy failed and application did not enumerate"
+        )
+    verify_running_application(backend, serial, metadata)
+    if not copied:
+        print("Copy interrupted by reset; exact running image confirms success", flush=True)
 
-def find_device(backend=None):
-    for vid, pid in SUPPORTED_DEVICES:
-        dev = usb.core.find(idVendor=vid, idProduct=pid, backend=backend)
-        if dev is not None:
-            return dev, vid, pid
-    return None, None, None
 
-def flash_uf2(filename, vid=DEFAULT_VID, pid=DEFAULT_PID):
-    uf2_data = open(filename, "rb").read()
+# Compatibility entry points retain the existing tool API; package/identity
+# policy stays here while the MSC transport is independently testable.
+validate_csw = msc.validate_csw
+send_scsi_write_10 = msc.send_scsi_write_10
 
-    # 1. First check if mounted volume /Volumes/PAGER_BOOT exists in OS
-    for mount_path in ["/Volumes/PAGER_BOOT"]:
-        if os.path.exists(mount_path):
-            print(f"💡 Found mounted bootloader volume at {mount_path}")
-            print(f"📦 Transferring {filename} ({len(uf2_data)} bytes) to {mount_path}...")
-            start_time = time.time()
-            copy_and_verify(filename, mount_path, get_backend())
-            elapsed = time.time() - start_time
-            speed_kb = (len(uf2_data) / 1024) / max(elapsed, 0.001)
-            print(f"🎉 UF2 Firmware transferred successfully via {mount_path} ({speed_kb:.1f} KB/s)!")
-            return
 
+def raw_transfer(device, data):
+    return msc.raw_transfer(device, data, send=send_scsi_write_10)
+
+
+def _flash_uf2(filename, vid=DEFAULT_VID, pid=DEFAULT_PID, *, serial=None, board=None):
+    # Fail before USB discovery/reboot on malformed or mismatched packages.
+    data, metadata = load_application_package(filename, REPO_ROOT, board)
+    if metadata.get("updater"):
+        raise ValueError("bootloader updater requires its dedicated install/verify/restore tool")
     backend = get_backend()
-    dev, found_vid, found_pid = find_device(backend)
+    serial = serial or os.getenv("PAGER_USB_SERIAL")
+    application = find_application(backend=backend, serial=serial)
+    if application is not None:
+        serial = application.serial_number
+        with PagerUsbClient(application) as client:
+            current = parse_info(client.get_info())
+            if current.get("board") and current["board"] != metadata["board"]:
+                raise RuntimeError("running device board does not match package")
+            if not current.get("board") and board != metadata["board"]:
+                raise RuntimeError("legacy app requires explicit --board before upgrading")
+            client.call(bytes([9]))
+        print(f"Requested bootloader on {normalize_serial(serial)}", flush=True)
+    else:
+        bootloader, _, _ = find_device(backend, vid, pid, serial)
+        if bootloader is None:
+            raise RuntimeError("selected Pager application or bootloader not found")
+        serial = bootloader.serial_number
+        if board != metadata["board"]:
+            raise RuntimeError("bootloader requires explicit --board")
+    serial = normalize_serial(serial)
+    deadline = time.monotonic() + 15
+    device = None
+    while time.monotonic() < deadline:
+        device, _, _ = find_device(backend, vid, pid, serial)
+        if device is not None:
+            break
+        time.sleep(0.25)
+    if device is None:
+        raise RuntimeError("selected chip did not enter bootloader")
+    # Give the OS a bounded opportunity to mount; do not compete with its MSC driver.
+    mount_deadline = time.monotonic() + 4
+    volume = None
+    while time.monotonic() < mount_deadline:
+        volume = find_volume(serial)
+        if volume is not None:
+            break
+        time.sleep(0.25)
+    started = time.monotonic()
+    if volume is not None:
+        print(f"Transferring {len(data)} bytes to {volume}", flush=True)
+        with tempfile.NamedTemporaryFile(suffix=".uf2") as snapshot:
+            snapshot.write(data)
+            snapshot.flush()
+            copy_and_verify(snapshot.name, volume, backend, serial, metadata)
+    else:
+        raw_transfer(device, data)
+        if not wait_for_application(backend, serial):
+            raise RuntimeError("UF2 sent, but selected chip did not boot")
+        verify_running_application(backend, serial, metadata)
+    print(f"Update verified in {time.monotonic() - started:.2f}s", flush=True)
 
-    if dev is None:
-        trigger_reboot_if_in_main_app()
-        start_time = time.time()
-        while time.time() - start_time < 8.0:
-            # Check mounted volume first (macOS auto-mounts MSC and blocks raw USB)
-            for mount_path in ["/Volumes/PAGER_BOOT"]:
-                if os.path.exists(mount_path):
-                    print(f"💡 Found mounted bootloader volume at {mount_path}")
-                    print(f"📦 Transferring {filename} ({len(uf2_data)} bytes) to {mount_path}...")
-                    vol_start = time.time()
-                    copy_and_verify(filename, mount_path, get_backend())
-                    elapsed = time.time() - vol_start
-                    speed_kb = (len(uf2_data) / 1024) / max(elapsed, 0.001)
-                    print(f"🎉 UF2 Firmware transferred successfully via {mount_path} ({speed_kb:.1f} KB/s)!")
-                    return
-            dev, found_vid, found_pid = find_device(backend)
-            if dev is not None:
-                break
-            time.sleep(0.3)
 
-    if dev is None:
-        print(f"❌ Device Pager Bootloader not found on USB!")
-        sys.exit(1)
+def flash_uf2(filename, vid=DEFAULT_VID, pid=DEFAULT_PID, *, serial=None, board=None):
+    _, metadata = load_application_package(filename, REPO_ROOT, board)
+    if metadata.get("updater"):
+        raise ValueError("bootloader updater requires its dedicated install/verify/restore tool")
+    backend = get_backend()
+    serial = serial or os.getenv("PAGER_USB_SERIAL")
+    application = find_application(backend=backend, serial=serial)
+    device = application or find_device(backend, vid, pid, serial)[0]
+    if device is None:
+        raise RuntimeError("selected Pager not found")
+    with hardware_lock(device.serial_number):
+        _flash_uf2(filename, vid, pid, serial=device.serial_number, board=board)
 
-    print(f"✅ Found device: Pager Bootloader USB Mass Storage ({hex(found_vid)}:{hex(found_pid)})")
 
-    try:
-        if dev.is_kernel_driver_active(0):
-            dev.detach_kernel_driver(0)
-    except Exception:
-        pass
+def flash_uf2_bytes(data, vid=DEFAULT_VID, pid=DEFAULT_PID):
+    # Kept for malformed-package host tests. Signed updates require their metadata.
+    layout = json.loads((REPO_ROOT / "layout.json").read_text())
+    paths = [
+        REPO_ROOT / "bootloader/firmware_signing_public.hex",
+        REPO_ROOT / "keys/dev_signing_public.hex",
+    ]
+    keys = [bytes.fromhex(p.read_text().strip()) for p in paths if p.exists()]
+    validate_uf2(data, layout, keys)
+    raise ValueError("a signed application update requires a file with package.json")
 
-    try:
-        dev.set_configuration()
-    except Exception:
-        pass
-
-    try:
-        usb.util.claim_interface(dev, 0)
-    except Exception:
-        pass
-
-    cfg = dev.get_active_configuration()
-    intf = cfg[(0,0)]
-
-    ep_out = usb.util.find_descriptor(
-        intf,
-        custom_match = lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT
-    )
-    ep_in = usb.util.find_descriptor(
-        intf,
-        custom_match = lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
-    )
-
-    with open(filename, "rb") as f:
-        uf2_data = f.read()
-
-    blocks = len(uf2_data) // 512
-    print(f"📦 Transferring {blocks} signed UF2 blocks ({len(uf2_data)} bytes) via USB Mass Storage SCSI...", flush=True)
-
-    start_time = time.time()
-    for i in range(0, len(uf2_data), 512):
-        block = uf2_data[i:i+512]
-        block_idx = i // 512
-        try:
-            csw = send_scsi_write_10(ep_out, ep_in, block_idx + 1, block_idx, block)
-        except Exception as e:
-            if block_idx + 1 >= blocks:
-                print(f"\n🚀 Block {block_idx + 1}/{blocks} received: device completed verification and reset into main application!")
-                if not wait_for_application(backend):
-                    raise RuntimeError(
-                        "final UF2 block sent, but Pager application did not enumerate"
-                    ) from e
-                verify_running_application(backend)
-                return
-            else:
-                err_str = str(e)
-                print(f"\n⚠️ Transfer error on block {block_idx + 1}/{blocks}: {err_str}")
-                if "Access denied" in err_str or "13" in err_str:
-                    print("🔒 macOS USB interface locked by IOUSBMassStorage or Chrome WebUSB.")
-                    print("⏳ Searching for mounted bootloader volume in /Volumes...")
-                    for _retry in range(20):
-                        vols = glob.glob("/Volumes/PAGER_BOOT")
-                        for mount_path in vols:
-                            if os.path.exists(mount_path):
-                                print(f"💡 Transferring {filename} to mounted volume {mount_path}...")
-                                copy_and_verify(filename, mount_path, get_backend())
-                                elapsed = time.time() - start_time
-                                speed_kb = (len(uf2_data) / 1024) / max(elapsed, 0.001)
-                                print(f"🎉 UF2 Firmware transferred successfully via {mount_path} ({speed_kb:.1f} KB/s)!")
-                                return
-                        time.sleep(0.3)
-                    print("👉 Close the Chrome WebUSB tab and retry.")
-                raise RuntimeError(f"UF2 transfer failed at block {block_idx + 1}/{blocks}: {e}") from e
-
-        csw = bytes(csw)
-        if len(csw) != 13 or csw[:4] != b"USBS" or csw[12] != 0:
-            raise RuntimeError(f"bootloader rejected UF2 block {block_idx + 1}: CSW={csw.hex()}")
-
-        pct = int(((block_idx + 1) / blocks) * 100)
-        elapsed = time.time() - start_time
-        speed_kb = ((block_idx + 1) * 0.5) / max(elapsed, 0.001)
-        bar = "█" * (pct // 5) + "░" * (20 - (pct // 5))
-        sys.stdout.write(f"\r  [{bar}] {pct}% ({block_idx + 1}/{blocks} blocks, {speed_kb:.1f} KB/s)")
-        sys.stdout.flush()
-
-    try:
-        usb.util.release_interface(dev, 0)
-    except Exception:
-        pass
-
-    elapsed = time.time() - start_time
-    speed_kb = (len(uf2_data) / 1024) / max(elapsed, 0.001)
-    if not wait_for_application(backend):
-        raise RuntimeError("bootloader accepted UF2, but Pager application did not enumerate")
-    verify_running_application(backend)
-    print(f"\n🎉 UF2 Firmware transferred and Pager enumerated in {elapsed:.2f}s ({speed_kb:.1f} KB/s)!", flush=True)
-
-def flash_uf2_bytes(uf2_data: bytes, vid=DEFAULT_VID, pid=DEFAULT_PID):
-    if len(uf2_data) < 512 or len(uf2_data) % 512 != 0:
-        raise ValueError("Invalid UF2 payload length: must be a multiple of 512 bytes")
-    magic0, magic1, magic_end = struct.unpack("<III", uf2_data[:8] + uf2_data[508:512])
-    if magic0 != 0x0A324655 or magic1 != 0x9E5D5157 or magic_end != 0x0AB16F30:
-        raise ValueError("Invalid UF2 block magic numbers")
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".uf2", delete=False) as f:
-        f.write(uf2_data)
-        tmp_path = f.name
-    try:
-        flash_uf2(tmp_path, vid, pid)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
 
 def main():
-    parser = argparse.ArgumentParser(description="Pager USB Mass Storage UF2 Firmware Flasher")
-    parser.add_argument("--file", "-f", default="dist/pager.uf2", help="Path to signed UF2 file (default: dist/pager.uf2)")
-    parser.add_argument("--vid", type=lambda x: int(x, 16), default=DEFAULT_VID, help="USB Vendor ID (hex)")
-    parser.add_argument("--pid", type=lambda x: int(x, 16), default=DEFAULT_PID, help="USB Product ID (hex)")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--file", "-f", required=True, help="UF2 inside a board/mode package directory"
+    )
+    parser.add_argument("--vid", type=lambda value: int(value, 16), default=DEFAULT_VID)
+    parser.add_argument("--pid", type=lambda value: int(value, 16), default=DEFAULT_PID)
+    parser.add_argument("--serial", default=os.getenv("PAGER_USB_SERIAL"))
+    parser.add_argument(
+        "--board", default=os.getenv("PAGER_BOARD"), choices=["nice-nano-v2", "xiao-nrf52840"]
+    )
     args = parser.parse_args()
+    try:
+        flash_uf2(args.file, args.vid, args.pid, serial=args.serial, board=args.board)
+    except (OSError, ValueError, RuntimeError, usb.core.USBError) as error:
+        parser.exit(1, f"error: {error}\n")
 
-    flash_uf2(args.file, args.vid, args.pid)
 
 if __name__ == "__main__":
     main()

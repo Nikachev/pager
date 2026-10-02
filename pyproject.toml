@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Standalone executables add the repository to sys.path before package imports.
+"tools/*.py" = ["E402"]
+"tests/diagnostic_ble.py" = ["E402"]

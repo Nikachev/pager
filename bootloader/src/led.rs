@@ -62,5 +62,4 @@ impl<'a> LedIndicator<'a> {
             self.pin.set_high();
         }
     }
-
 }

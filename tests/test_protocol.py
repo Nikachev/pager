@@ -40,8 +40,71 @@ def test_frame_rejects_crc_version_and_oversize():
 
 def test_ui_artifacts_are_standalone_and_share_design_tokens():
     root = Path(__file__).resolve().parents[1]
-    pages = [(root / name).read_text(encoding="utf-8") for name in ("ble_client.html", "webusb_client.html")]
+    pages = [
+        (root / name).read_text(encoding="utf-8")
+        for name in ("ble_client.html", "webusb_client.html")
+    ]
     for page in pages:
         assert not re.search(r"(?:src|href)=[\"']https?://", page)
         assert "--bg:#f6f7f9" in page
         assert "--accent:#2563eb" in page
+
+
+def test_shared_golden_vectors():
+    import json
+
+    vectors = json.loads((Path(__file__).parent / "fixtures/protocol_vectors.json").read_text())
+    for vector in vectors:
+        payload = bytes.fromhex(vector["payload_hex"])
+        frame = bytes.fromhex(vector["frame_hex"])
+        assert encode_frame(FrameKind(vector["kind"]), vector["request_id"], payload) == frame
+        assert read_frame(frame) == (
+            (FrameKind(vector["kind"]), vector["request_id"], payload),
+            b"",
+        )
+
+
+def test_protocol_generation_and_validation():
+    import importlib.util
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    module_spec = importlib.util.spec_from_file_location(
+        "generate_protocol", root / "tools/generate_protocol.py"
+    )
+    generator = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(generator)
+    spec = json.loads((root / "protocol.json").read_text())
+    generator.validate(spec)
+    for path, expected in generator.artifacts(spec).items():
+        assert path.read_text() == expected
+    spec["commands"]["get_info"] = spec["commands"]["ping"]
+    with pytest.raises(ValueError, match="duplicate"):
+        generator.validate(spec)
+
+
+def test_state_truncation_extra_fields_utf8_and_slots():
+    from pager_tools.protocol import decode_state
+
+    state = bytes([5, 1, 1, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert decode_state(state)["base_name"] == ""
+    for size in range(len(state)):
+        with pytest.raises(ProtocolError):
+            decode_state(state[:size])
+    with pytest.raises(ProtocolError, match="trailing"):
+        decode_state(state + b"x")
+    invalid = bytearray(state)
+    invalid[3] = 3
+    with pytest.raises(ProtocolError, match="slot"):
+        decode_state(bytes(invalid))
+    with pytest.raises(ProtocolError, match="UTF-8"):
+        decode_state(state[:-1] + b"\x01\xff")
+
+
+def test_resynchronization_keeps_only_candidate_or_magic_suffix():
+    from pager_tools.protocol import resynchronize
+
+    assert resynchronize(b"garbage" * 10000 + b"PG") == b"PG"
+    assert resynchronize(b"garbage" * 10000) == b""
+    frame = encode_frame(FrameKind.RESPONSE, 7, b"ok")
+    assert resynchronize(b"garbage" + frame) == frame

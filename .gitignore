@@ -1,10 +1,13 @@
 # Rust build products
 /target/
 /bootloader/target/
+/xiao-installer/target/
+/bootloader-updater/target/
 /dist/
 
 # Python tooling and local environments
 /.pytest_cache/
+/.ruff_cache/
 __pycache__/
 /.venv/
 /venv/

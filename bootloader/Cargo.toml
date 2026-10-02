@@ -21,7 +21,7 @@ cortex-m = { version = "0.7.8", features = ["inline-asm", "critical-section-sing
 cortex-m-rt = "0.7.6"
 ed25519-compact = { version = "2.3.1", default-features = false, features = ["opt_size"] }
 sha2 = { version = "0.11.0", default-features = false }
-embassy-nrf = { version = "0.11.0", features = ["nrf52840", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
+embassy-nrf = { version = "0.11.0", path = "../vendor/embassy-nrf", features = ["nrf52840", "time-driver-rtc1", "gpiote", "unstable-pac", "rt"] }
 embassy-time = { version = "0.5.1" }
 embedded-storage = "0.3.1"
 usb-device = "0.3.2"

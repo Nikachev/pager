@@ -37,11 +37,11 @@ pub async fn blink_task(mut led: Output<'static>) -> ! {
             }
             1 => {
                 led.set_high(); // OFF
-                mode = LED_MODE.wait().await;
+                mode = crate::idle_progress(crate::HEARTBEAT_BLINK, LED_MODE.wait()).await;
             }
             2 => {
                 led.set_low(); // ON
-                mode = LED_MODE.wait().await;
+                mode = crate::idle_progress(crate::HEARTBEAT_BLINK, LED_MODE.wait()).await;
             }
             _ => {
                 mode = 0;

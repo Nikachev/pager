@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pager — USB control</title>
+<style>
+{{STYLE}}
+</style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div class="brand"><h1 id="device_title">Pager</h1><p>USB control</p></div>
+    <span id="usb_status" class="pill" role="status" aria-live="polite">USB disconnected</span>
+  </header>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>Device</h2><div id="device_hint" class="muted">Connect Pager to manage Bluetooth.</div></div><span id="ble_status" class="pill">Bluetooth unavailable</span></div>
+    <div class="actions">
+      <button id="connect" class="btn primary">Connect USB</button>
+      <button id="disconnect" class="btn ghost" hidden>Disconnect USB</button>
+      <button id="bluetooth_toggle" class="btn" hidden disabled>Turn Bluetooth on</button>
+      <button id="rename_device" class="btn" hidden disabled>Rename Pager</button>
+      <button id="cancel_pairing" class="btn" hidden disabled>Cancel pairing</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>Bluetooth slots</h2><div class="muted">Choose a saved device, or select an empty slot to pair.</div></div></div>
+    <div id="slots" class="slots" aria-live="polite"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><div><h2>Keyboard test</h2><div class="muted">Send a short text to the currently connected host.</div></div></div>
+    <div class="send"><input id="text" aria-label="Keyboard test text" maxlength="256" placeholder="Text to type" disabled><button id="type" class="btn primary" disabled>Send</button></div>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Diagnostics and firmware</summary>
+      <div class="diagnostics">
+        <div class="actions">
+          <button id="get_logs" class="btn ghost" disabled>Read device log</button>
+          <button id="reboot" class="btn danger" disabled>Reboot to bootloader</button>
+          <button id="factory_reset" class="btn danger" disabled>Factory reset</button>
+        </div>
+        <div id="log" class="log" role="log" aria-label="Device diagnostics"><span class="warn">Ready. Connect Pager over USB.</span></div>
+      </div>
+    </details>
+  </section>
+</main>
+
+<dialog id="rename_dialog" aria-labelledby="rename_title" aria-describedby="rename_help"><form method="dialog" class="dialog-body"><h3 id="rename_title">Rename device</h3><p id="rename_help">The slot number is added automatically. Press Escape to cancel without saving.</p><input id="rename_input" aria-label="Common Pager name" maxlength="24" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="rename_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="slot_name_dialog" aria-labelledby="slot_name_title" aria-describedby="slot_name_help"><form method="dialog" class="dialog-body"><h3 id="slot_name_title">Rename paired device</h3><p id="slot_name_help">The Bluetooth MAC address remains visible below the name. Press Escape to cancel without saving.</p><input id="slot_name_input" aria-label="Paired device alias" maxlength="32" autocomplete="off"><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="slot_name_save" value="default" class="btn primary">Save</button></div></form></dialog>
+<dialog id="confirm_dialog" aria-labelledby="confirm_title" aria-describedby="confirm_message"><form method="dialog" class="dialog-body"><h3 id="confirm_title">Confirm action</h3><p id="confirm_message"></p><div class="dialog-actions"><button value="cancel" class="btn">Cancel</button><button id="confirm_accept" value="default" class="btn danger">Continue</button></div></form></dialog>
+
+<script>
+{{SCRIPT}}
+</script>
+</body>
+</html>

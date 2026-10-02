@@ -21,7 +21,6 @@ pub struct Command<'a, Kind, Class> {
     pub lun: u8,
 }
 
-
 /// [SCSI] over [Bulk Only Transport] command
 ///
 /// [SCSI]: crate::subclass::scsi::Scsi
@@ -30,6 +29,11 @@ pub struct Command<'a, Kind, Class> {
 impl<'a, 'alloc, Bus: UsbBus + 'alloc, Buf: BorrowMut<[u8]>>
     Command<'a, ScsiCommand, Scsi<BulkOnly<'alloc, Bus, Buf>>>
 {
+    /// Distinguish a new CBW from another poll of the current command.
+    pub fn id(&self) -> u32 {
+        self.class.transport.command_id()
+    }
+
     /// [crate::transport::bbb::BulkOnly::read_data]
     pub fn read_data(&mut self, dst: &mut [u8]) -> Result<usize, TransportError<BulkOnlyError>> {
         self.class.transport.read_data(dst)

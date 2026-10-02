@@ -3,12 +3,8 @@ Pytest configuration and shared fixtures for pager device integration tests.
 """
 
 import os
-import sys
-import tempfile
 import pytest
-from common import find_serial_port
-
-LOCK_FILE = os.environ.get("PAGER_LOCK_FILE", os.path.join(tempfile.gettempdir(), "pager_hil_test.lock"))
+from pager_tools.hardware import hardware_lock, find_serial_port
 
 
 def pytest_addoption(parser):
@@ -41,10 +37,13 @@ def pytest_collection_modifyitems(config, items):
 
     # Keep BLE checks last: profile contract tests may briefly switch the active
     # slot, while BLE checks attach to the connection already owned by macOS.
-    items.sort(key=lambda item: (
-        "ble" in item.keywords,
-        item.name == "test_serial_logs",
-    ))
+    items.sort(
+        key=lambda item: (
+            "ble" in item.keywords,
+            item.name == "test_serial_logs",
+        )
+    )
+
 
 @pytest.fixture(scope="session", autouse=True)
 def lock_hardware_device(request):
@@ -52,20 +51,19 @@ def lock_hardware_device(request):
     if not request.config.getoption("--run-hil"):
         yield
         return
-    try:
-        lock_fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(lock_fd, str(os.getpid()).encode())
-    except FileExistsError:
-        pytest.exit("[-] Error: Another HIL test process is already running on the physical device. Concurrent runs are forbidden.", returncode=1)
+    import libusb_package
+    from pager_tools.usb import find_application
 
-    yield
+    device = find_application(
+        backend=libusb_package.get_libusb1_backend(), serial=os.getenv("PAGER_USB_SERIAL")
+    )
+    if device is None:
+        pytest.exit("selected Pager application not found", returncode=1)
+    serial = device.serial_number
+    os.environ["PAGER_USB_SERIAL"] = serial
+    with hardware_lock(serial):
+        yield
 
-    try:
-        os.close(lock_fd)
-        if os.path.exists(LOCK_FILE):
-            os.remove(LOCK_FILE)
-    except OSError:
-        pass
 
 @pytest.fixture(scope="session")
 def repo_root():
@@ -73,14 +71,7 @@ def repo_root():
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-
 @pytest.fixture(scope="function")
 def serial_port():
     """Returns auto-detected or configured serial port, retrying for USB re-enumeration."""
-    import time
-    for _ in range(30):
-        port = find_serial_port()
-        if port:
-            return port
-        time.sleep(0.5)
-    return find_serial_port()
+    return find_serial_port(timeout=15)

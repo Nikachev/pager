@@ -91,6 +91,7 @@ pub struct BulkOnly<'alloc, Bus: UsbBus, Buf: BorrowMut<[u8]>> {
     buf: Buffer<Buf>,
     state: State,
     cbw: CommandBlockWrapper,
+    command_id: u32,
     cs: Option<CommandStatus>,
     max_lun: u8,
 }
@@ -140,6 +141,7 @@ where
             buf: Buffer::new(buf),
             state: State::Idle,
             cbw: Default::default(),
+            command_id: 0,
             cs: Default::default(),
             max_lun,
         })
@@ -193,6 +195,11 @@ where
         }
     }
 
+    /// Local generation, independent of host-reused CBW tags.
+    pub fn command_id(&self) -> u32 {
+        self.command_id
+    }
+
     /// Reads data from the IO buffer returning the number of bytes actually read
     ///
     /// # Arguments
@@ -207,14 +214,7 @@ where
         if !matches!(self.state, State::DataTransferFromHost) {
             return Err(TransportError::Error(BulkOnlyError::InvalidState));
         }
-        Ok(self
-            .buf
-            .read(|buf| {
-                let size = min(dst.len(), buf.len());
-                dst[..size].copy_from_slice(buf);
-                Ok::<usize, ()>(size)
-            })
-            .unwrap())
+        Ok(self.buf.read_into(dst))
     }
 
     /// Writes data from the IO buffer returning the number of bytes actually written
@@ -445,6 +445,7 @@ where
                 cbw.data_transfer_len = 0; // original value ignored
             }
         };
+        self.command_id = self.command_id.wrapping_add(1);
         self.cbw = cbw;
     }
 

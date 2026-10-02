@@ -8,6 +8,7 @@ use embassy_sync::blocking_mutex::Mutex as SyncMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::pubsub::PubSubChannel;
 use embassy_sync::signal::Signal;
+use embassy_sync::watch::Watch;
 use trouble_host::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,7 @@ impl KeyboardState {
                 self.slot_names[*slot].clear();
                 if self.active_profile == Some(*slot) {
                     self.connected_profile = None;
+                    self.hid_ready = false;
                     self.pairing_mode = false;
                     self.fast_advertising = false;
                     self.link_state = BleLinkState::Idle;
@@ -266,11 +268,139 @@ pub fn default_device_name() -> heapless::String<32> {
     name
 }
 
-pub static BLE_COMMANDS: Channel<ThreadModeRawMutex, BleCommand, 8> = Channel::new();
+pub static BLE_COMMANDS: Channel<ThreadModeRawMutex, BleRequest, 8> = Channel::new();
+pub static STORAGE_RECOVERY: Signal<ThreadModeRawMutex, ()> = Signal::new();
 pub static PERSIST_STATE: Signal<ThreadModeRawMutex, u32> = Signal::new();
-pub static PERSIST_DONE: Signal<ThreadModeRawMutex, (u32, bool)> = Signal::new();
+pub static PERSIST_DONE: Watch<ThreadModeRawMutex, PersistOutcomes, 2> = Watch::new();
+
+pub fn persist_covers(completed: u32, requested: u32) -> bool {
+    completed.wrapping_sub(requested) < 0x8000_0000
+}
+
+/// Bounded terminal batch history. Evicted results fail closed rather than
+/// being inferred from a later unrelated successful snapshot.
+#[derive(Clone, Copy)]
+struct PersistBatch {
+    first: u32,
+    last: u32,
+    success: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct PersistOutcomes {
+    batches: [Option<PersistBatch>; 8],
+    completed: Option<u32>,
+}
+
+impl PersistOutcomes {
+    pub fn complete(&mut self, through: u32, success: bool) {
+        let first = self.completed.unwrap_or(0).wrapping_add(1);
+        // A duplicate/stale signal cannot rewrite a terminal failure as success.
+        if self
+            .completed
+            .is_some_and(|last| persist_covers(last, through))
+        {
+            return;
+        }
+        self.batches.rotate_right(1);
+        self.batches[0] = Some(PersistBatch {
+            first,
+            last: through,
+            success,
+        });
+        self.completed = Some(through);
+    }
+
+    pub fn result(&self, requested: u32) -> Option<bool> {
+        for batch in self.batches.iter().flatten() {
+            if requested.wrapping_sub(batch.first) <= batch.last.wrapping_sub(batch.first) {
+                return Some(batch.success);
+            }
+        }
+        self.completed
+            .filter(|last| persist_covers(*last, requested))
+            .map(|_| false)
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub async fn wait_persist(sequence: u32) -> bool {
+    let Some(mut receiver) = PERSIST_DONE.receiver() else {
+        return false;
+    };
+    embassy_time::with_timeout(
+        embassy_time::Duration::from_secs(5),
+        receiver.get_and(|outcomes| outcomes.result(sequence).is_some()),
+    )
+    .await
+    .ok()
+    .and_then(|outcomes| outcomes.result(sequence))
+    .unwrap_or(false)
+}
+
+pub fn current_persist_sequence() -> u32 {
+    PERSIST_SEQUENCE.load(Ordering::Relaxed)
+}
 static PERSIST_SEQUENCE: AtomicU32 = AtomicU32::new(0);
-pub static BLE_CONTROL_RESULT: Signal<ThreadModeRawMutex, u8> = Signal::new();
+pub static BLE_CONTROL_RESULT: Watch<ThreadModeRawMutex, (u32, u8), 1> = Watch::new();
+static CONTROL_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
+pub struct BleRequest {
+    pub id: u32,
+    pub deadline_ticks: u64,
+    pub command: BleCommand,
+}
+
+impl BleRequest {
+    pub fn expired(&self, now_ticks: u64) -> bool {
+        now_ticks >= self.deadline_ticks
+    }
+}
+
+pub fn next_control_id() -> u32 {
+    loop {
+        let id = CONTROL_SEQUENCE
+            .fetch_add(1, Ordering::Relaxed)
+            .wrapping_add(1);
+        if id != 0 {
+            return id;
+        }
+    }
+}
+
+static TYPE_CONTROL_ID: AtomicU32 = AtomicU32::new(0);
+pub static TYPE_CONTROL_RESULT: Signal<ThreadModeRawMutex, (u32, u8)> = Signal::new();
+pub fn register_type_control(id: u32) -> bool {
+    if TYPE_CONTROL_ID
+        .compare_exchange(0, id, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return false;
+    }
+    TYPE_CONTROL_RESULT.try_take();
+    true
+}
+pub fn finish_type_control(id: u32) {
+    let _ = TYPE_CONTROL_ID.compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed);
+}
+pub fn complete_control(id: u32, result: u8) {
+    if TYPE_CONTROL_ID.load(Ordering::Relaxed) == id {
+        TYPE_CONTROL_RESULT.signal((id, result));
+    } else {
+        BLE_CONTROL_RESULT.sender().send((id, result));
+    }
+}
+
+#[cfg(target_arch = "arm")]
+pub fn start_control(request: BleRequest) -> Option<(u32, u64, BleCommand)> {
+    if request.expired(embassy_time::Instant::now().as_ticks()) {
+        complete_control(request.id, 1);
+        None
+    } else {
+        Some((request.id, request.deadline_ticks, request.command))
+    }
+}
+pub static COMMAND_HIGH_WATER: AtomicU32 = AtomicU32::new(0);
 pub static DROPPED_COMMANDS: AtomicU32 = AtomicU32::new(0);
 pub static STATE_REVISION: AtomicU32 = AtomicU32::new(0);
 pub static STATE_EVENTS: PubSubChannel<ThreadModeRawMutex, u32, 8, 2, 1> = PubSubChannel::new();
@@ -293,11 +423,12 @@ pub fn request_persist() -> u32 {
     sequence
 }
 
-pub fn try_send_command(command: BleCommand) -> bool {
+pub fn try_send_command(command: BleRequest) -> bool {
     if BLE_COMMANDS.try_send(command).is_ok() {
+        COMMAND_HIGH_WATER.fetch_max(BLE_COMMANDS.len() as u32, Ordering::Relaxed);
         true
     } else {
-        DROPPED_COMMANDS.fetch_add(1, Ordering::Relaxed);
+        crate::diagnostics::increment_saturated(&DROPPED_COMMANDS);
         false
     }
 }
@@ -354,6 +485,65 @@ pub fn ascii_to_hid(c: char) -> Option<(u8, u8)> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn saturated_queue_preserves_order_and_rejects_only_the_new_request() {
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        let queue: Channel<NoopRawMutex, BleRequest, 8> = Channel::new();
+        for id in 1..=8 {
+            assert!(queue
+                .try_send(BleRequest {
+                    id,
+                    deadline_ticks: 100,
+                    command: BleCommand::CancelPairing
+                })
+                .is_ok());
+        }
+        let rejected = queue
+            .try_send(BleRequest {
+                id: 9,
+                deadline_ticks: 100,
+                command: BleCommand::FactoryReset,
+            })
+            .err()
+            .unwrap();
+        let embassy_sync::channel::TrySendError::Full(rejected) = rejected;
+        assert_eq!(rejected.id, 9);
+        assert_eq!(queue.len(), 8);
+        for id in 1..=8 {
+            assert_eq!(queue.try_receive().unwrap().id, id);
+        }
+        assert!(queue.try_receive().is_err());
+    }
+
+    #[test]
+    fn pending_request_expires_at_deadline() {
+        let request = BleRequest {
+            id: 7,
+            deadline_ticks: 100,
+            command: BleCommand::FactoryReset,
+        };
+        assert!(!request.expired(99));
+        assert!(request.expired(100));
+        assert!(request.expired(101));
+    }
+
+    #[test]
+    fn late_result_cannot_finish_next_request() {
+        use core::future::Future;
+        use core::task::{Context, Poll};
+        let watch = Watch::<embassy_sync::blocking_mutex::raw::NoopRawMutex, (u32, u8), 1>::new();
+        let mut receiver = watch.receiver().unwrap();
+        // Request 7 timed out; request 8 is now waiting.
+        watch.sender().send((7, 0));
+        let mut waiting = core::pin::pin!(receiver.get_and(|(id, _)| *id == 8));
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        watch.sender().send((7, 3));
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        watch.sender().send((8, 0));
+        assert_eq!(waiting.as_mut().poll(&mut cx), Poll::Ready((8, 0)));
+    }
+
     fn state() -> KeyboardState {
         KeyboardState {
             bonds: [None, None, None],
@@ -368,6 +558,66 @@ mod tests {
             fast_advertising: false,
             hid_ready: false,
         }
+    }
+
+    #[test]
+    fn persistence_ack_is_broadcast_and_sequence_filtered() {
+        use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+        let watch: Watch<NoopRawMutex, PersistOutcomes, 2> = Watch::new();
+        let mut first = watch.receiver().unwrap();
+        let mut second = watch.receiver().unwrap();
+        let mut outcomes = PersistOutcomes::default();
+        outcomes.complete(9, true);
+        watch.sender().send(outcomes);
+        let (a, b) = futures::executor::block_on(async {
+            futures::join!(
+                first.get_and(|o| o.result(8).is_some()),
+                second.get_and(|o| o.result(9).is_some())
+            )
+        });
+        assert_eq!(a.result(8), Some(true));
+        assert_eq!(b.result(9), Some(true));
+        assert_eq!(b.result(10), None);
+        assert!(persist_covers(0, u32::MAX));
+        assert!(!persist_covers(u32::MAX, 0));
+    }
+
+    #[test]
+    fn rollback_failure_survives_later_success_and_stale_signal() {
+        let mut outcomes = PersistOutcomes::default();
+        outcomes.complete(2, true);
+        // Commit 3 failed; requests 4 and 5 arrived during flash I/O and
+        // their runtime changes were also discarded by rollback.
+        outcomes.complete(5, false);
+        outcomes.complete(5, true);
+        outcomes.complete(7, true);
+        for id in [1, 2, 6, 7] {
+            assert_eq!(outcomes.result(id), Some(true));
+        }
+        for id in [3, 4, 5] {
+            assert_eq!(outcomes.result(id), Some(false));
+        }
+        assert_eq!(outcomes.result(8), None);
+    }
+
+    #[test]
+    fn persistence_terminal_ranges_wrap_and_eviction_fails_closed() {
+        let mut outcomes = PersistOutcomes {
+            completed: Some(u32::MAX - 1),
+            ..Default::default()
+        };
+        outcomes.complete(0, false);
+        outcomes.complete(1, true);
+        assert_eq!(outcomes.result(u32::MAX), Some(false));
+        assert_eq!(outcomes.result(0), Some(false));
+        assert_eq!(outcomes.result(1), Some(true));
+        for id in 2..12 {
+            outcomes.complete(id, true);
+        }
+        assert_eq!(outcomes.result(0), Some(false));
+        assert_eq!(outcomes.result(1), Some(false));
+        assert_eq!(outcomes.result(11), Some(true));
+        assert_eq!(outcomes.result(12), None);
     }
 
     #[test]
@@ -413,5 +663,326 @@ mod tests {
         assert_eq!(bonded_hid_cccd_flags(true, 0b01), 0b01);
         assert_eq!(bonded_hid_cccd_flags(false, 0), 0);
         assert_eq!(bonded_hid_cccd_flags(true, 0b100), 0b111);
+    }
+}
+
+pub fn store_unique_bond(state: &mut KeyboardState, slot: usize, bond: BondInformation) {
+    let same_identity = state.bonds[slot]
+        .as_ref()
+        .is_some_and(|existing| existing.identity.match_identity(&bond.identity));
+    for other in 0..state.bonds.len() {
+        if other != slot
+            && state.bonds[other]
+                .as_ref()
+                .is_some_and(|existing| existing.identity.match_identity(&bond.identity))
+        {
+            state.bonds[other] = None;
+            state.cccd_flags[other] = 0;
+            state.slot_names[other].clear();
+        }
+    }
+    if !same_identity || state.slot_names[slot].is_empty() {
+        state.slot_names[slot] = format_default_peer_name(bond.identity.addr.addr.raw());
+    }
+    state.bonds[slot] = Some(bond);
+}
+
+pub fn remove_duplicate_bonds(state: &mut KeyboardState) -> bool {
+    let mut changed = false;
+    for slot in 0..state.bonds.len() {
+        let Some(identity) = state.bonds[slot].as_ref().map(|bond| bond.identity) else {
+            continue;
+        };
+        for duplicate in slot + 1..state.bonds.len() {
+            if state.bonds[duplicate]
+                .as_ref()
+                .is_some_and(|bond| bond.identity.match_identity(&identity))
+            {
+                state.bonds[duplicate] = None;
+                state.cccd_flags[duplicate] = 0;
+                state.slot_names[duplicate].clear();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Session events carry the captured slot so stale events cannot attach a
+/// connection to a newly selected profile. Bond data is never formatted.
+#[allow(clippy::large_enum_variant)]
+pub enum SessionEvent<'a> {
+    ControllerStopped,
+    Control(&'a BleCommand),
+    Connecting(usize),
+    Secured {
+        slot: usize,
+        bond: Option<BondInformation>,
+    },
+    PairingFailed(usize),
+    Disconnected(usize),
+    HidReady {
+        slot: usize,
+        ready: bool,
+    },
+}
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Effects {
+    pub changed: bool,
+    pub persist: bool,
+    pub disconnect: bool,
+}
+impl KeyboardState {
+    pub fn session_event(&mut self, event: SessionEvent<'_>) -> Effects {
+        if matches!(event, SessionEvent::ControllerStopped) {
+            self.connected_profile = None;
+            self.hid_ready = false;
+            self.link_state = if !self.bluetooth_enabled {
+                BleLinkState::BluetoothOff
+            } else if self.active_profile.is_none() {
+                BleLinkState::Idle
+            } else if self.pairing_mode {
+                BleLinkState::Pairing
+            } else {
+                BleLinkState::Advertising
+            };
+            return Effects {
+                changed: true,
+                ..Effects::default()
+            };
+        }
+        if let SessionEvent::Control(command) = event {
+            if self.is_noop(command) {
+                return Effects::default();
+            }
+            let disconnect = self.connected_profile.is_some()
+                && !matches!(command, BleCommand::SetSlotName(_, _))
+                && !matches!(command, BleCommand::ClearSlot(slot) if self.active_profile != Some(*slot));
+            let handled = self.reduce(command);
+            return Effects {
+                changed: handled,
+                persist: handled,
+                disconnect: handled && disconnect,
+            };
+        }
+        let slot = match &event {
+            SessionEvent::Control(_) | SessionEvent::ControllerStopped => unreachable!(),
+            SessionEvent::Connecting(s)
+            | SessionEvent::PairingFailed(s)
+            | SessionEvent::Disconnected(s) => *s,
+            SessionEvent::Secured { slot, .. } | SessionEvent::HidReady { slot, .. } => *slot,
+        };
+        if slot >= self.bonds.len() || !self.bluetooth_enabled || self.active_profile != Some(slot)
+        {
+            return Effects {
+                disconnect: matches!(
+                    event,
+                    SessionEvent::Connecting(_) | SessionEvent::Secured { .. }
+                ),
+                ..Effects::default()
+            };
+        }
+        match event {
+            SessionEvent::Control(_) | SessionEvent::ControllerStopped => unreachable!(),
+            SessionEvent::Connecting(_) => {
+                self.connected_profile = None;
+                self.hid_ready = false;
+                self.link_state = BleLinkState::Connecting;
+                Effects {
+                    changed: true,
+                    ..Effects::default()
+                }
+            }
+            SessionEvent::Secured { bond, .. } => {
+                if let Some(bond) = bond {
+                    store_unique_bond(self, slot, bond);
+                }
+                self.pairing_mode = false;
+                self.connected_profile = Some(slot);
+                self.link_state = BleLinkState::Connected;
+                Effects {
+                    changed: true,
+                    persist: true,
+                    disconnect: false,
+                }
+            }
+            SessionEvent::PairingFailed(_) => {
+                self.connected_profile = None;
+                self.hid_ready = false;
+                self.link_state = BleLinkState::Disconnecting;
+                Effects {
+                    changed: true,
+                    disconnect: true,
+                    persist: false,
+                }
+            }
+            SessionEvent::Disconnected(_) => {
+                self.connected_profile = None;
+                self.hid_ready = false;
+                self.link_state = if self.pairing_mode {
+                    BleLinkState::Pairing
+                } else {
+                    BleLinkState::Advertising
+                };
+                Effects {
+                    changed: true,
+                    ..Effects::default()
+                }
+            }
+            SessionEvent::HidReady { ready, .. } => {
+                let ready = ready
+                    && self.connected_profile == Some(slot)
+                    && self.link_state == BleLinkState::Connected;
+                let changed = self.hid_ready != ready;
+                self.hid_ready = ready;
+                Effects {
+                    changed,
+                    ..Effects::default()
+                }
+            }
+        }
+    }
+}
+
+pub fn cccd_flags(values: [Option<&[u8]>; 3]) -> u8 {
+    values.into_iter().enumerate().fold(0, |flags, (i, value)| {
+        flags
+            | if value.is_some_and(|v| v.len() >= 2 && u16::from_le_bytes([v[0], v[1]]) != 0) {
+                1 << i
+            } else {
+                0
+            }
+    })
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    fn state() -> KeyboardState {
+        KeyboardState {
+            bonds: [None, None, None],
+            cccd_flags: [0; 3],
+            slot_names: Default::default(),
+            device_name: heapless::String::new(),
+            active_profile: Some(0),
+            connected_profile: None,
+            bluetooth_enabled: true,
+            link_state: BleLinkState::Pairing,
+            pairing_mode: true,
+            fast_advertising: false,
+            hid_ready: false,
+        }
+    }
+    #[test]
+    fn security_gates_hid_and_failure_clears_readiness() {
+        let mut s = state();
+        s.session_event(SessionEvent::Connecting(0));
+        s.session_event(SessionEvent::HidReady {
+            slot: 0,
+            ready: true,
+        });
+        assert!(!s.hid_ready);
+        assert!(
+            s.session_event(SessionEvent::Secured {
+                slot: 0,
+                bond: None
+            })
+            .persist
+        );
+        s.session_event(SessionEvent::HidReady {
+            slot: 0,
+            ready: true,
+        });
+        assert!(s.hid_ready);
+        assert!(s.session_event(SessionEvent::PairingFailed(0)).disconnect);
+        assert!(!s.hid_ready);
+        assert_eq!(s.connected_profile, None);
+        s.session_event(SessionEvent::Disconnected(0));
+        assert_eq!(s.link_state, BleLinkState::Advertising);
+    }
+    #[test]
+    fn stale_slot_and_off_events_cannot_reconnect_or_mark_ready() {
+        let mut s = state();
+        assert!(
+            s.session_event(SessionEvent::Secured {
+                slot: 1,
+                bond: None
+            })
+            .disconnect
+        );
+        assert_eq!(s.active_profile, Some(0));
+        assert_eq!(s.connected_profile, None);
+        s.reduce(&BleCommand::SetBluetoothEnabled(false));
+        assert!(s.session_event(SessionEvent::Connecting(0)).disconnect);
+        s.session_event(SessionEvent::HidReady {
+            slot: 0,
+            ready: true,
+        });
+        assert!(!s.hid_ready);
+        assert_eq!(s.link_state, BleLinkState::BluetoothOff);
+    }
+    #[test]
+    fn control_and_session_events_share_disconnect_and_noop_effects() {
+        let mut s = state();
+        s.session_event(SessionEvent::Secured {
+            slot: 0,
+            bond: None,
+        });
+        s.session_event(SessionEvent::HidReady {
+            slot: 0,
+            ready: true,
+        });
+        let effects = s.session_event(SessionEvent::Control(&BleCommand::SetBluetoothEnabled(
+            false,
+        )));
+        assert!(effects.persist && effects.disconnect && effects.changed);
+        assert_eq!(s.link_state, BleLinkState::BluetoothOff);
+        assert!(!s.hid_ready);
+        assert_eq!(
+            s.session_event(SessionEvent::Control(&BleCommand::SetBluetoothEnabled(
+                false
+            ))),
+            Effects::default()
+        );
+    }
+    #[test]
+    fn type_result_survives_concurrent_control_completion_and_stale_finish() {
+        assert!(register_type_control(101));
+        assert!(!register_type_control(102));
+        finish_type_control(100);
+        assert!(!register_type_control(102));
+        complete_control(101, 3);
+        complete_control(102, 0);
+        assert_eq!(TYPE_CONTROL_RESULT.try_take(), Some((101, 3)));
+        finish_type_control(101);
+        assert!(register_type_control(103));
+        finish_type_control(103);
+    }
+    #[test]
+    fn controller_stop_clears_transient_link_and_preserves_durable_selection() {
+        let mut s = state();
+        s.session_event(SessionEvent::Secured {
+            slot: 0,
+            bond: None,
+        });
+        s.session_event(SessionEvent::HidReady {
+            slot: 0,
+            ready: true,
+        });
+        s.cccd_flags = [3, 1, 0];
+        s.session_event(SessionEvent::ControllerStopped);
+        assert_eq!(s.connected_profile, None);
+        assert!(!s.hid_ready);
+        assert_eq!(s.active_profile, Some(0));
+        assert_eq!(s.cccd_flags, [3, 1, 0]);
+        assert_eq!(s.link_state, BleLinkState::Advertising);
+        s.reduce(&BleCommand::SetBluetoothEnabled(false));
+        s.session_event(SessionEvent::ControllerStopped);
+        assert_eq!(s.link_state, BleLinkState::BluetoothOff);
+    }
+    #[test]
+    fn cccd_handles_missing_short_and_indication_values() {
+        assert_eq!(cccd_flags([None, Some(&[1]), Some(&[2, 0])]), 4);
+        assert_eq!(cccd_flags([Some(&[1, 0]), Some(&[0, 0]), Some(&[0, 1])]), 5);
     }
 }

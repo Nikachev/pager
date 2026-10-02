@@ -120,8 +120,9 @@ unsafe fn HardFault(_frame: &cortex_m_rt::ExceptionFrame) -> ! {
 #[entry]
 fn main() -> ! {
     // 1. Check double-tap / DFU reset trigger BEFORE initializing Embassy peripherals
+    let reset_reason = double_tap::capture_reset_reason();
     let fault_reset = double_tap::take_fault();
-    let double_tap = !fault_reset && double_tap::check_and_set_double_tap();
+    let double_tap = !fault_reset && double_tap::check_and_set_double_tap(reset_reason);
 
     start_hfclk();
     init_nrf52840_usb_power();
@@ -179,9 +180,10 @@ fn main() -> ! {
         let usb_serial = factory_usb_serial();
         let usb_builder = UsbDeviceBuilder::new(bus_alloc, UsbVidPid(0x239A, 0x0029));
         let usb_builder = match usb_builder.strings(&[StringDescriptors::default()
-                .manufacturer("Nikachev")
-                .product("Pager Boot Drive")
-                .serial_number(usb_serial.as_str())]) {
+            .manufacturer("Nikachev")
+            .product("Pager Boot Drive")
+            .serial_number(usb_serial.as_str())])
+        {
             Ok(builder) => builder,
             Err(_) => reset_after_fault(),
         };
@@ -249,6 +251,8 @@ struct FirmwareValidationResult {
 fn validate_existing_firmware() -> FirmwareValidationResult {
     let start_ptr = FIRMWARE_START as *const u8;
     let manifest_ptr = start_ptr as *const manifest::Manifest;
+    // Generated firmware_start is in flash, with a 256-byte manifest reserve;
+    // the shared Manifest occupies its first 112 bytes.
     let manifest = unsafe { core::ptr::read_unaligned(manifest_ptr) };
 
     if manifest.magic != manifest::MAGIC || manifest.image_len == 0 {
@@ -269,6 +273,8 @@ fn validate_existing_firmware() -> FirmwareValidationResult {
 
     let image_len = manifest.image_len as usize;
     let image_start = FIRMWARE_START + MANIFEST_SIZE;
+    // image_len_is_valid() checked alignment and the complete range against
+    // storage_start before constructing this flash slice.
     let image_slice = unsafe { core::slice::from_raw_parts(image_start as *const u8, image_len) };
 
     let valid_vector = valid_vector_table(image_slice, image_start);
@@ -287,14 +293,7 @@ fn validate_existing_firmware() -> FirmwareValidationResult {
 }
 
 fn valid_vector_table(image: &[u8], image_start: u32) -> bool {
-    if image.len() < 8 {
-        return false;
-    }
-    let initial_sp = u32::from_le_bytes([image[0], image[1], image[2], image[3]]);
-    let reset = u32::from_le_bytes([image[4], image[5], image[6], image[7]]);
-    (0x2000_0000..=0x2004_0000).contains(&initial_sp)
-        && (reset & 1) == 1
-        && (image_start..image_start + image.len() as u32).contains(&(reset & !1))
+    pager_bootloader_core::codec::validate_vector(image, image_start).is_ok()
 }
 
 fn jump(image_start: u32) -> ! {

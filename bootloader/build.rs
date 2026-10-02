@@ -25,6 +25,10 @@ fn rust_key(key: [u8; 32]) -> String {
 }
 
 fn main() {
+    let version = env::var("PAGER_BOOTLOADER_VERSION").unwrap_or_else(|_| "0.3.0-dev".to_owned());
+    assert!(version.is_ascii() && version.len() <= 40 && !version.contains(['\r', '\n']));
+    println!("cargo:rustc-env=PAGER_BOOTLOADER_VERSION={version}");
+    println!("cargo:rerun-if-env-changed=PAGER_BOOTLOADER_VERSION");
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let layout_path = PathBuf::from("../layout.json");
     let layout: Value = serde_json::from_slice(&fs::read(&layout_path).unwrap()).unwrap();
@@ -57,7 +61,9 @@ fn main() {
     let mut keys = rust_key(release_key);
     if dev {
         keys.push(',');
-        keys.push_str(&rust_key(decode_public_key("../keys/dev_signing_public.hex")));
+        keys.push_str(&rust_key(decode_public_key(
+            "../keys/dev_signing_public.hex",
+        )));
     }
     fs::write(
         out.join("signing_keys.rs"),

@@ -1,24 +1,44 @@
 """Strict PyUSB discovery and request/response client for Pager."""
 
+import math
 import time
 import usb.core
 import usb.util
 
-from .protocol import FrameKind, ProtocolError, encode_frame, read_frame
+from .protocol import FrameKind, ProtocolError, encode_frame, read_frame, resynchronize
 
-APP_VID = 0x1209
-APP_PID = 0x0002
+from .protocol_spec import APPLICATION_VID, APPLICATION_PID
+
+APP_VID = APPLICATION_VID
+APP_PID = APPLICATION_PID
+
+
+def normalize_serial(serial):
+    return (serial or "").strip().upper()
+
+
+def parse_info(text, separator=";", delimiter="="):
+    fields = {}
+    for item in text.split(separator):
+        if delimiter not in item:
+            continue
+        name, value = (part.strip() for part in item.split(delimiter, 1))
+        if name in fields:
+            raise ProtocolError(f"duplicate metadata field: {name}")
+        fields[name] = value
+    return fields
 
 
 def find_application(backend=None, serial=None):
     devices = list(
-        usb.core.find(
-            find_all=True, idVendor=APP_VID, idProduct=APP_PID, backend=backend
-        )
-        or []
+        usb.core.find(find_all=True, idVendor=APP_VID, idProduct=APP_PID, backend=backend) or []
     )
     if serial:
-        devices = [device for device in devices if device.serial_number == serial]
+        devices = [
+            device
+            for device in devices
+            if normalize_serial(device.serial_number) == normalize_serial(serial)
+        ]
     if len(devices) > 1:
         raise ProtocolError("multiple Pager devices found; set PAGER_USB_SERIAL")
     return devices[0] if devices else None
@@ -32,6 +52,8 @@ class PagerUsbClient:
         self.endpoint_out = None
         self.buffer = b""
         self.request_id = 1
+        self.claimed = False
+        self.detached = False
 
     def __enter__(self):
         if self.device.get_active_configuration() is None:
@@ -42,17 +64,15 @@ class PagerUsbClient:
                 continue
             incoming = usb.util.find_descriptor(
                 interface,
-                custom_match=lambda endpoint: usb.util.endpoint_direction(
-                    endpoint.bEndpointAddress
-                )
-                == usb.util.ENDPOINT_IN,
+                custom_match=lambda endpoint: (
+                    usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_IN
+                ),
             )
             outgoing = usb.util.find_descriptor(
                 interface,
-                custom_match=lambda endpoint: usb.util.endpoint_direction(
-                    endpoint.bEndpointAddress
-                )
-                == usb.util.ENDPOINT_OUT,
+                custom_match=lambda endpoint: (
+                    usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_OUT
+                ),
             )
             if incoming is not None and outgoing is not None:
                 self.interface = interface.bInterfaceNumber
@@ -62,37 +82,68 @@ class PagerUsbClient:
         if self.interface is None:
             raise ProtocolError("Pager WebUSB interface not found")
         try:
-            if self.device.is_kernel_driver_active(self.interface):
-                self.device.detach_kernel_driver(self.interface)
-        except (NotImplementedError, usb.core.USBError):
-            pass
-        usb.util.claim_interface(self.device, self.interface)
+            try:
+                if self.device.is_kernel_driver_active(self.interface):
+                    self.device.detach_kernel_driver(self.interface)
+                    self.detached = True
+            except NotImplementedError:
+                pass
+            usb.util.claim_interface(self.device, self.interface)
+            self.claimed = True
+        except usb.core.USBError, OSError:
+            self.close()
+            raise
         return self
 
     def __exit__(self, *_):
-        if self.interface is not None:
-            usb.util.release_interface(self.device, self.interface)
+        self.close()
+
+    def close(self):
+        try:
+            if self.claimed:
+                try:
+                    usb.util.release_interface(self.device, self.interface)
+                except usb.core.USBError:
+                    pass  # Reset/disconnect can invalidate the interface.
+                self.claimed = False
+        finally:
+            try:
+                if self.detached:
+                    try:
+                        self.device.attach_kernel_driver(self.interface)
+                    except usb.core.USBError, NotImplementedError:
+                        pass
+                    self.detached = False
+            finally:
+                usb.util.dispose_resources(self.device)
 
     def call(self, payload: bytes, timeout_ms=5000) -> bytes:
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+        deadline = time.monotonic() + timeout_ms / 1000
         request_id = self.request_id
         self.request_id = (self.request_id + 1) & 0xFFFFFFFF or 1
-        self.endpoint_out.write(
+        written = self.endpoint_out.write(
             encode_frame(FrameKind.COMMAND, request_id, payload), timeout=timeout_ms
         )
-        deadline = time.monotonic() + timeout_ms / 1000
+        if written != len(payload) + 16:
+            raise ProtocolError("short Pager USB write")
         while time.monotonic() < deadline:
             parsed = read_frame(self.buffer)
             if parsed is None:
-                packet = self.endpoint_in.read(64, timeout=timeout_ms)
+                self.buffer = resynchronize(self.buffer)
+                remaining_ms = max(1, math.ceil((deadline - time.monotonic()) * 1000))
+                try:
+                    packet = self.endpoint_in.read(64, timeout=remaining_ms)
+                except usb.core.USBTimeoutError as error:
+                    raise ProtocolError("Pager command timeout") from error
                 self.buffer += bytes(packet)
                 continue
             (kind, received_id, body), self.buffer = parsed
             if kind == FrameKind.EVENT:
                 continue
             if received_id != request_id:
-                raise ProtocolError(
-                    f"unexpected response id {received_id}, expected {request_id}"
-                )
+                raise ProtocolError(f"unexpected response id {received_id}, expected {request_id}")
             if kind == FrameKind.ERROR:
                 code = body[0] if body else "unknown"
                 raise ProtocolError(f"Pager command error {code}")

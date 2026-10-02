@@ -7,16 +7,13 @@ import pytest
 from bleak import BleakClient, BleakScanner
 
 from common import (
-    find_serial_port,
     run_async,
     find_ble_device,
-    SERVICE_UUID,
     HID_INPUT_REPORT_UUID,
     HID_PROTOCOL_MODE_UUID,
     HID_REPORT_MAP_UUID,
     BATTERY_SERVICE_UUID,
     BATTERY_LEVEL_UUID,
-    DEFAULT_PORT,
 )
 
 pytestmark = pytest.mark.hil
@@ -24,25 +21,13 @@ pytestmark = pytest.mark.hil
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-@pytest.fixture(scope="session")
-def serial_port():
-    for _ in range(10):
-        try:
-            port = find_serial_port()
-            if port:
-                return port
-        except Exception:
-            pass
-        time.sleep(0.5)
-    return DEFAULT_PORT
-
-
 # ---------------------------------------------------------------------------
 # BLE Functionality Tests
 # ---------------------------------------------------------------------------
 
+
 async def find_hil_ble_device(retries=3):
-    for attempt in range(retries):
+    for _attempt in range(retries):
         dev = await find_ble_device("Pager")
         if dev:
             return dev
@@ -51,16 +36,9 @@ async def find_hil_ble_device(retries=3):
 
 
 def _decode_state(payload):
-    assert len(payload) >= 10 and payload[0] == 5
-    return {
-        "enabled": bool(payload[1]),
-        "link": payload[2],
-        "active": None if payload[3] == 0xFF else payload[3],
-        "connected": None if payload[4] == 0xFF else payload[4],
-        "pairing": bool(payload[5]),
-        "bonds": tuple(bool(value) for value in payload[6:9]),
-        "hid_ready": bool(payload[9]),
-    }
+    from pager_tools.protocol import decode_state
+
+    return decode_state(payload)
 
 
 @pytest.mark.contract
@@ -105,7 +83,9 @@ def test_prepaired_slot_switching_fixture():
             pytest.fail("slot 1 did not reconnect with HID ready")
         assert state["bonds"] == (True, True, False)
 
-        client.call(bytes([8]) + b"Pager HIL slot 1\n", timeout_ms=12000)
+        # Do not submit a chat message or form when the host's focused field
+        # is used for manual HID acceptance.
+        client.call(bytes([8]) + b"Pager HIL slot 1", timeout_ms=12000)
 
 
 @pytest.mark.contract
@@ -187,20 +167,12 @@ def test_ble_functionality():
 # CDC Serial Logs & DFU Reboot Tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.smoke
-def test_serial_logs():
+def test_serial_logs(serial_port):
     """Test retrieving live logs from CDC-ACM serial endpoint"""
     print("\n--- Running Serial Logs Test ---")
-    port = None
-    for _ in range(10):
-        try:
-            port = find_serial_port()
-            if port:
-                break
-        except Exception:
-            pass
-        time.sleep(0.5)
-    assert port, "Serial port not found"
+    port = serial_port
     try:
         s = serial.Serial(port, 115200, timeout=2)
         s.write(b"\r\n")
@@ -208,7 +180,7 @@ def test_serial_logs():
         lines = []
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
-            line = s.readline().decode('utf-8', errors='ignore').strip()
+            line = s.readline().decode("utf-8", errors="ignore").strip()
             if line:
                 lines.append(line)
                 if len(lines) >= 3:
@@ -218,7 +190,7 @@ def test_serial_logs():
         print("Serial logs received:")
         print(full_text)
         assert len(lines) > 0, "No logs received from CDC-ACM port"
-    except Exception as e:
+    except (serial.SerialException, OSError) as e:
         pytest.fail(f"Serial port failed: {e}")
 
 
@@ -226,12 +198,14 @@ def test_serial_logs():
 def test_uf2_flashing():
     """Test UF2 firmware flashing to Pager Bootloader"""
     print("\n--- Running UF2 Flashing Test ---")
-    uf2_file = os.path.join(_REPO_ROOT, "dist", "pager.uf2")
+    board = os.environ.get("PAGER_BOARD", "nice-nano-v2")
+    uf2_file = os.path.join(_REPO_ROOT, "dist", board, "dev", "app", "pager.uf2")
     assert os.path.exists(uf2_file), f"UF2 file not found: {uf2_file}"
 
     sys.path.insert(0, os.path.join(_REPO_ROOT, "tools"))
     import flash_uf2 as flasher
-    flasher.flash_uf2(uf2_file)
+
+    flasher.flash_uf2(uf2_file, board=board)
     print("UF2 Firmware transferred successfully and application booted!")
 
 
@@ -284,9 +258,9 @@ def test_corrupted_uf2_rejection():
     import flash_uf2 as flasher
 
     bad_payload = bytearray(512)
-    bad_payload[0:4] = (0xDEADBEEF).to_bytes(4, 'little')  # Bad magic 0
+    bad_payload[0:4] = (0xDEADBEEF).to_bytes(4, "little")  # Bad magic 0
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         flasher.flash_uf2_bytes(bytes(bad_payload))
     print("Corrupted UF2 payload correctly rejected by flasher / validation!")
 
@@ -294,12 +268,14 @@ def test_corrupted_uf2_rejection():
 @pytest.mark.smoke
 def test_partition_limits():
     """Verify that built binary payloads fit within allocated Flash partitions"""
-    signed_bin = os.path.join(_REPO_ROOT, "dist", "pager-signed.bin")
-    if os.path.exists(signed_bin):
-        size = os.path.getsize(signed_bin)
-        import json
-        with open(os.path.join(_REPO_ROOT, "layout.json"), encoding="utf-8") as layout_file:
-            layout = json.load(layout_file)
-        limit = layout["storage_start"] - layout["firmware_start"]
-        assert size <= limit, f"Signed payload {size} exceeds partition limit {limit}"
-        print(f"Partition limit test passed: payload size {size} / {limit} bytes")
+    board = os.environ.get("PAGER_BOARD", "nice-nano-v2")
+    signed_bin = os.path.join(_REPO_ROOT, "dist", board, "dev", "app", "pager-signed.bin")
+    assert os.path.exists(signed_bin), f"Build the selected board first: {signed_bin}"
+    size = os.path.getsize(signed_bin)
+    import json
+
+    with open(os.path.join(_REPO_ROOT, "layout.json"), encoding="utf-8") as layout_file:
+        layout = json.load(layout_file)
+    limit = layout["storage_start"] - layout["firmware_start"]
+    assert size <= limit, f"Signed payload {size} exceeds partition limit {limit}"
+    print(f"Partition limit test passed: payload size {size} / {limit} bytes")

@@ -27,8 +27,10 @@ items marked **blocking** must be completed before the first public release.
 
 ## Supported hardware and host matrix
 
-- [ ] Run the full application, bootloader, UF2 and non-destructive HIL suite on
-  a physical Seeed Studio XIAO nRF52840; it is currently compile-validated only.
+- [x] Validate development firmware on physical Seeed Studio XIAO nRF52840:
+  application USB/HID, signed bootloader update, UF2 recovery and persistence.
+  Exact images and the final GET_INFO patch qualification scope are recorded in
+  [FINAL_VALIDATION.md](docs/FINAL_VALIDATION.md).
 - [ ] Validate WebUSB over USB OTG on the supported Android/Chrome version and
   add the result to the support matrix.
 - [ ] Repeat the complete two-host BLE acceptance cycle on release candidates:

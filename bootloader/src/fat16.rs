@@ -2,10 +2,18 @@
 
 pub const VOLUME_LABEL: &[u8; 11] = b"PAGER_BOOT ";
 pub const TOTAL_SECTORS: u32 = 131_072;
-const INFO_HEADER: &[u8] = b"UF2 Bootloader v0.2.0\r\nModel: Pager nRF52840\r\nBoard-ID: NRF52840-PAGER\r\nSerial: ";
+const INFO_HEADER: &[u8] =
+    b"UF2 Bootloader v0.3.0\r\nModel: Pager nRF52840\r\nBoard-ID: NRF52840-PAGER\r\nSerial: ";
 const INFO_KIND_PREFIX: &[u8] = b"\r\nKind: ";
 const INFO_DATE_PREFIX: &[u8] = b"\r\nDate: ";
-const INFO_SUFFIX: &[u8] = b"\r\n";
+#[cfg(feature = "board-nice-nano-v2")]
+const BOARD: &str = "nice-nano-v2";
+#[cfg(feature = "board-xiao-nrf52840")]
+const BOARD: &str = "xiao-nrf52840";
+const BOARD_PREFIX: &[u8] = b"\r\nBoard: ";
+const VERSION_PREFIX: &[u8] = b"\r\nVersion: ";
+const HASH_PREFIX: &[u8] = b"\r\nPartition-SHA256: ";
+const CAPABILITIES: &[u8] = b"\r\nCapabilities: signed-uf2,bootloader-updater-v1\r\n";
 
 fn info_file_len() -> u32 {
     (INFO_HEADER.len()
@@ -14,7 +22,13 @@ fn info_file_len() -> u32 {
         + crate::public_key::BOOTLOADER_KIND.len()
         + INFO_DATE_PREFIX.len()
         + option_env!("BUILD_DATE").unwrap_or("unknown").len()
-        + INFO_SUFFIX.len()) as u32
+        + BOARD_PREFIX.len()
+        + BOARD.len()
+        + VERSION_PREFIX.len()
+        + env!("PAGER_BOOTLOADER_VERSION").len()
+        + HASH_PREFIX.len()
+        + 64
+        + CAPABILITIES.len()) as u32
 }
 
 pub fn get_virtual_fat_sector(lba: u32, buf: &mut [u8]) {
@@ -72,8 +86,8 @@ fn write_info(buf: &mut [u8]) {
     };
     let mut offset = 0;
     append(buf, &mut offset, INFO_HEADER);
-    append_hex(buf, &mut offset, device0);
     append_hex(buf, &mut offset, device1);
+    append_hex(buf, &mut offset, device0);
     append(buf, &mut offset, INFO_KIND_PREFIX);
     append(
         buf,
@@ -86,7 +100,33 @@ fn write_info(buf: &mut [u8]) {
         &mut offset,
         option_env!("BUILD_DATE").unwrap_or("unknown").as_bytes(),
     );
-    append(buf, &mut offset, INFO_SUFFIX);
+    append(buf, &mut offset, BOARD_PREFIX);
+    append(buf, &mut offset, BOARD.as_bytes());
+    append(buf, &mut offset, VERSION_PREFIX);
+    append(
+        buf,
+        &mut offset,
+        env!("PAGER_BOOTLOADER_VERSION").as_bytes(),
+    );
+    append(buf, &mut offset, HASH_PREFIX);
+    use sha2::{Digest, Sha256};
+    // Hash the entire partition, including the erased tail, avoiding a
+    // self-referential embedded image hash or linker-dependent image length.
+    let mut hasher = Sha256::new();
+    for address in (0..0xC000u32).step_by(4) {
+        crate::feed_inherited_watchdog();
+        let word = unsafe { core::ptr::read_volatile(address as *const u32) };
+        hasher.update(word.to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    for chunk in digest.chunks_exact(4) {
+        append_hex(
+            buf,
+            &mut offset,
+            u32::from_be_bytes(chunk.try_into().unwrap()),
+        );
+    }
+    append(buf, &mut offset, CAPABILITIES);
 }
 
 fn append(buf: &mut [u8], offset: &mut usize, value: &[u8]) {
@@ -123,7 +163,10 @@ mod tests {
 
         get_virtual_fat_sector(513, &mut sector);
         assert_eq!(&sector[32..43], b"INFO_UF2TXT");
-        assert_eq!(u32::from_le_bytes(sector[60..64].try_into().unwrap()), info_file_len());
+        assert_eq!(
+            u32::from_le_bytes(sector[60..64].try_into().unwrap()),
+            info_file_len()
+        );
         assert!(sector[64..].iter().all(|byte| *byte == 0));
         assert_eq!(get_fat16_entry(2), 0xFFFF);
         assert_eq!(get_fat16_entry(3), 0);

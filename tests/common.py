@@ -9,38 +9,8 @@ defined in exactly one place.
 
 import asyncio
 import os
-import sys
 import time
 from serial.tools import list_ports
-
-
-def find_serial_port():
-    env_port = os.getenv("SERIAL_PORT") or os.getenv("PORT")
-    if env_port:
-        return env_port
-    requested_serial = os.getenv("PAGER_USB_SERIAL")
-    # The development SWD probe is another USB CDC device and can remain
-    # connected during HIL. Default to Pager's application identity so it is
-    # never mistaken for the firmware serial port.
-    requested_vid = os.getenv("PAGER_USB_VID", "0x1209")
-    requested_pid = os.getenv("PAGER_USB_PID", "0x0002")
-    ports = []
-    for port in list_ports.comports():
-        if not port.device.startswith("/dev/cu.usbmodem"):
-            continue
-        if requested_serial and port.serial_number != requested_serial:
-            continue
-        if requested_vid and (port.vid is None or port.vid != int(requested_vid, 0)):
-            continue
-        if requested_pid and (port.pid is None or port.pid != int(requested_pid, 0)):
-            continue
-        ports.append(port.device)
-    ports.sort()
-    if not ports:
-        raise RuntimeError("No matching USB modem found")
-    if len(ports) != 1:
-        raise RuntimeError(f"Multiple USB modems match: {', '.join(ports)}; set SERIAL_PORT")
-    return ports[0]
 
 
 DEFAULT_PORT = os.getenv("SERIAL_PORT") or os.getenv("PORT")
@@ -81,12 +51,13 @@ def wait_for_serial_disconnect(port, timeout=10):
 def wait_for_serial_reconnect(port, timeout=30):
     """Poll list_ports until ``port`` reappears and can be opened."""
     import serial
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             with serial.Serial(port, 115200, timeout=0.5):
                 return True
-        except (serial.SerialException, OSError):
+        except serial.SerialException, OSError:
             time.sleep(0.2)
     return False
 
@@ -103,7 +74,9 @@ async def find_ble_device(name_prefix="Pager", timeout=8.0):
             name = d.name or adv.local_name
             if name and name.startswith(name_prefix):
                 return d
-            if adv.service_uuids and any(u.lower() == service_uuid_lower for u in adv.service_uuids):
+            if adv.service_uuids and any(
+                u.lower() == service_uuid_lower for u in adv.service_uuids
+            ):
                 return d
         await asyncio.sleep(0.2)
     return None
