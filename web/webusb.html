@@ -31,6 +31,18 @@
     <div id="slots" class="slots" aria-live="polite"></div>
   </section>
 
+  <section class="panel" aria-labelledby="gps_title">
+    <div class="panel-head"><div><h2 id="gps_title">Location and board time</h2><div id="gps_hint" class="muted">Connect XIAO to read GPS.</div></div><span id="gps_status" class="pill">GPS unavailable</span></div>
+    <dl class="gps-grid">
+      <div><dt>Latitude</dt><dd class="coordinate-value" id="gps_latitude">—</dd></div>
+      <div><dt>Longitude</dt><dd class="coordinate-value"><span id="gps_longitude">—</span><button id="copy_coordinates" class="copy-icon" type="button" aria-label="Copy coordinates" title="Copy coordinates" disabled><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg></button></dd></div>
+      <div class="gps-wide"><dt>Board time</dt><dd id="board_time">Waiting for GPS time</dd></div>
+      <div class="gps-wide"><dt>Time zone from GPS location</dt><dd id="board_timezone">UTC · waiting for location</dd></div>
+    </dl>
+    <p id="copy_coordinates_status" class="muted copy-feedback" role="status" aria-live="polite"></p>
+    <p id="board_time_source" class="muted">Time has not been synchronized.</p>
+  </section>
+
   <section class="panel">
     <div class="panel-head"><div><h2>Keyboard test</h2><div class="muted">Send a short text to the currently connected host.</div></div></div>
     <div class="send"><input id="text" aria-label="Keyboard test text" maxlength="256" placeholder="Text to type" disabled><button id="type" class="btn primary" disabled>Send</button></div>

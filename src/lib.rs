@@ -20,3 +20,7 @@ pub mod diagnostics;
 pub mod hid;
 
 pub mod advertising;
+
+pub mod gps;
+
+pub mod clock;

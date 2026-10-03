@@ -144,3 +144,8 @@ Operating and development guides live in [docs/](docs/). Work required before
 public release is tracked in [RELEASE_TASKS.md](RELEASE_TASKS.md).
 Dated validation results and experiment history are kept separately in
 [reports/](reports/README.md).
+
+### XIAO L76K GPS
+
+The XIAO firmware supports the Seeed L76K GNSS expansion board on D6/D7.
+See [GPS wiring and live diagnostics](docs/GPS.md) for connection and satellite-fix checks.

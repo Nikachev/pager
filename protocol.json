@@ -28,7 +28,10 @@
     "get_logs": 10,
     "set_device_name": 11,
     "set_slot_name": 12,
-    "factory_reset": 13
+    "factory_reset": 13,
+    "get_gps": 14,
+    "get_gps_sentence": 15,
+    "get_gps_startup": 16
   },
   "header_size": 16,
   "frame_kinds": {

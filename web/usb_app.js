@@ -4,6 +4,12 @@ class PagerApp {
     this.doc = doc;
     this.usb = usb;
     this.state = null;
+    this.gps = null;
+    this.gpsZone = null;
+    this.gpsRefreshing = null;
+    this.gpsTimer = null;
+    this.gpsReceived = 0;
+    this.gpsError = null;
     this.busy = false;
     this.refreshing = null;
     this.refreshAgain = false;
@@ -36,6 +42,12 @@ class PagerApp {
 
   disconnected(error) {
     ++this.epoch;
+    clearTimeout(this.gpsTimer);
+    this.gpsTimer = null;
+    this.gps = null;
+    this.gpsZone = null;
+    this.gpsRefreshing = null;
+    this.gpsError = null;
     clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.refreshAgain = false;
@@ -111,6 +123,7 @@ class PagerApp {
     let success = false;
     try {
       if (this.refreshing) await this.refreshing;
+      if (this.gpsRefreshing) await this.gpsRefreshing;
       await operation();
       success = epoch === this.epoch;
       if (success) this.log('Done', 'ok');
@@ -192,6 +205,68 @@ class PagerApp {
     for (const id of ['get_logs','reboot','factory_reset']) this.element(id).disabled = !ready;
     for (const id of ['text','type']) this.element(id).disabled = !ready || !state.hidReady;
     this.renderSlots(ready);
+    this.renderGps();
+  }
+
+  async refreshGps() {
+    if (!this.session.connected || this.gpsRefreshing) return;
+    const epoch = this.epoch;
+    this.gpsRefreshing = (async () => {
+      try {
+        const bytes = await this.session.call([PAGER_PROTOCOL.commands.get_gps]);
+        if (epoch !== this.epoch) return;
+        this.gps = PagerGps.decode(bytes);
+        this.gpsReceived = performance.now();
+        this.gpsError = null;
+        if (this.gps.position || this.gps.lastPosition) {
+          try { this.gpsZone = PagerGps.zone(this.gps.position || this.gps.lastPosition); }
+          catch (_) { this.gpsZone = null; }
+        }
+        this.renderGps();
+      } catch (error) {
+        if (epoch !== this.epoch) return;
+        this.gps = null;
+        this.gpsError = error.message;
+        this.renderGps();
+      } finally {
+        if (epoch === this.epoch) this.gpsRefreshing = null;
+      }
+    })();
+    return this.gpsRefreshing;
+  }
+
+  scheduleGps() {
+    clearTimeout(this.gpsTimer);
+    if (!this.session.connected || this.gps?.supported === false || this.gpsError) return;
+    this.gpsTimer = setTimeout(async () => {
+      this.gpsTimer = null;
+      this.renderGps();
+      if (!this.busy && !this.refreshing) await this.refreshGps();
+      this.scheduleGps();
+    }, 1000);
+    this.gpsTimer?.unref?.();
+  }
+
+  renderGps() {
+    const gps = this.session.connected ? this.gps : null;
+    const elapsed = gps ? Math.max(0, performance.now() - this.gpsReceived) : 0;
+    const fresh = elapsed < 5000;
+    const position = fresh ? gps?.position : null;
+    const last = fresh && !position ? gps?.lastPosition : null;
+    const displayed = position || last;
+    const status = this.element('gps_status');
+    status.textContent = !gps ? 'GPS unavailable' : !gps.supported ? 'GPS not supported' : !fresh ? 'GPS data stale' : position ? 'GPS fix' : gps.connected ? 'Searching for satellites' : 'GPS not detected';
+    status.className = 'pill' + (position ? ' on' : gps?.connected ? ' busy' : '');
+    this.element('gps_latitude').textContent = displayed ? `${displayed.lat.toFixed(6)}°` : '—';
+    this.element('gps_longitude').textContent = displayed ? `${displayed.lon.toFixed(6)}°` : '—';
+    this.element('copy_coordinates').disabled = !position || !this.doc.defaultView?.navigator?.clipboard;
+    if (!position) this.element('copy_coordinates_status').textContent = '';
+    this.element('gps_hint').textContent = this.gpsError ? 'Update firmware to read GPS and board time.' : !gps ? 'Connect XIAO to read GPS.' : !gps.supported ? 'L76K is supported on XIAO boards.' : position ? `${gps.satellites} satellites in use` : last ? `Last known location · ${Math.floor((last.age + elapsed) / 1000)} s ago. Waiting for a new GPS fix.` : 'Waiting for a location fix. Place the antenna with a clear view of the sky.';
+    const zone = this.gpsZone || 'UTC';
+    this.element('board_timezone').textContent = this.gpsZone ? `${zone} · estimated from ${position ? 'GPS location' : 'last GPS location'}` : 'UTC · waiting for location';
+    this.element('board_time').textContent = gps?.utcMs != null && fresh ? PagerGps.time(gps.utcMs + elapsed, zone) : gps?.utcMs != null ? 'Board time unavailable' : 'Waiting for GPS time';
+    const age = gps?.age == null ? null : gps.age + elapsed;
+    this.element('board_time_source').textContent = !gps?.supported ? 'GPS time unavailable.' : gps.utcMs == null ? 'Time has not been synchronized.' : !fresh ? 'USB clock sample is stale.' : age < 5000 ? 'Synchronized with GPS · local time includes daylight saving.' : `Board clock running · last GPS correction ${Math.floor(age / 1000)} s ago.`;
   }
 
   renderSlots(ready) {
@@ -242,6 +317,18 @@ class PagerApp {
 
   bind() {
     const cmd = PAGER_PROTOCOL.commands;
+    this.element('copy_coordinates').onclick = async () => {
+      const position = this.session.connected && performance.now() - this.gpsReceived < 5000 ? this.gps?.position : null;
+      const clipboard = this.doc.defaultView?.navigator?.clipboard;
+      if (!position || !clipboard) return;
+      const epoch = this.epoch;
+      try {
+        await clipboard.writeText(`${position.lat.toFixed(6)}, ${position.lon.toFixed(6)}`);
+        if (epoch === this.epoch) this.element('copy_coordinates_status').textContent = 'Copied · paste into Google Maps search';
+      } catch (_) {
+        if (epoch === this.epoch) this.element('copy_coordinates_status').textContent = 'Could not copy. Select the coordinates to copy manually.';
+      }
+    };
     this.element('connect').onclick = () => {
       if (this.busy) return;
       ++this.epoch;
@@ -254,6 +341,8 @@ class PagerApp {
           await this.session.connect(device);
           // Initial state belongs to this connection, before exposing controls.
           this.state = PagerCodec.decodeState(await this.session.call([cmd.get_state]));
+          await this.refreshGps();
+          this.scheduleGps();
         } catch (error) {
           await this.session.disconnect();
           this.disconnected();

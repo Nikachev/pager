@@ -143,6 +143,9 @@ pub enum Command<'a> {
     TypeText(&'a str),
     Reboot,
     GetLogs,
+    GetGps,
+    GetGpsStartup,
+    GetGpsSentence(u8),
     SetDeviceName(&'a str),
     SetSlotName(u8, &'a str),
     FactoryReset,
@@ -176,6 +179,9 @@ pub fn decode_command(bytes: &[u8]) -> Result<Command<'_>, CommandError> {
         }
         [spec::REBOOT_TO_BOOTLOADER] => Command::Reboot,
         [spec::GET_LOGS] => Command::GetLogs,
+        [spec::GET_GPS] => Command::GetGps,
+        [spec::GET_GPS_STARTUP] => Command::GetGpsStartup,
+        [spec::GET_GPS_SENTENCE, index @ 0..=23] => Command::GetGpsSentence(*index),
         [spec::SET_DEVICE_NAME, rest @ ..] => {
             Command::SetDeviceName(text(rest, spec::LIMIT_DEVICE_NAME, true)?)
         }
@@ -183,7 +189,7 @@ pub fn decode_command(bytes: &[u8]) -> Result<Command<'_>, CommandError> {
             Command::SetSlotName(*slot, text(rest, spec::LIMIT_SLOT_NAME, true)?)
         }
         [spec::FACTORY_RESET] => Command::FactoryReset,
-        [id, ..] if spec::PING <= *id && *id <= spec::FACTORY_RESET => return Err(BadRequest),
+        [id, ..] if spec::PING <= *id && *id <= spec::GET_GPS_STARTUP => return Err(BadRequest),
         [] => return Err(BadRequest),
         _ => return Err(Unsupported),
     })
@@ -409,6 +415,22 @@ mod tests {
         );
         assert_eq!(
             decode_command(&[spec::SET_DEVICE_NAME, b' ']),
+            Err(CommandError::BadRequest)
+        );
+        assert_eq!(decode_command(&[spec::GET_GPS]), Ok(Command::GetGps));
+        assert_eq!(
+            decode_command(&[spec::GET_GPS_SENTENCE, 23]),
+            Ok(Command::GetGpsSentence(23))
+        );
+        for payload in [
+            &[spec::GET_GPS_SENTENCE][..],
+            &[spec::GET_GPS_SENTENCE, 24][..],
+            &[spec::GET_GPS_SENTENCE, 0, 1][..],
+        ] {
+            assert_eq!(decode_command(payload), Err(CommandError::BadRequest));
+        }
+        assert_eq!(
+            decode_command(&[spec::GET_GPS, 0]),
             Err(CommandError::BadRequest)
         );
         assert_eq!(decode_command(&[0xfe]), Err(CommandError::Unsupported));

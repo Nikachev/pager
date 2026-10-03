@@ -12,3 +12,5 @@ they are not operating instructions or a current task list.
 Raw local artifacts and signed recovery packages remain in the `dist/checkpoints/`
 paths recorded by each report. They are Git-ignored and are not included here.
 Keep failures and successful retries distinct when adding a report.
+
+L76K hardware check: [XIAO GPS reception and positioning](2026-10-03/GPS_L76K.md).

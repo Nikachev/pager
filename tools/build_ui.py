@@ -16,7 +16,13 @@ def render_pages(protocol_js=None):
         if name == "webusb":
             scripts = [protocol_js] + [
                 (ROOT / "web" / filename).read_text()
-                for filename in ("protocol_codec.js", "usb_session.js", "usb_app.js")
+                for filename in (
+                    "vendor/tz_lookup.js",
+                    "protocol_codec.js",
+                    "gps_view.js",
+                    "usb_session.js",
+                    "usb_app.js",
+                )
             ]
             scripts.append("const pagerApp = new PagerApp(document, navigator.usb);\n")
             page = page.replace("{{SCRIPT}}", "\n".join(scripts).rstrip())

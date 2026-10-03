@@ -285,6 +285,36 @@ pub async fn webusb_task(mut transport: webusb::Transport<'static, NrfUsbDriver>
                                     )
                                     .await;
                                 }
+                                [protocol::spec::GET_GPS_SENTENCE, index @ 0..=23] => {
+                                    let sentence = crate::gps_task::sentence(*index);
+                                    webusb_reply(
+                                        &mut transport,
+                                        protocol::UsbFrameKind::Response,
+                                        header.request_id,
+                                        sentence.as_bytes(),
+                                    )
+                                    .await;
+                                }
+                                [protocol::spec::GET_GPS_STARTUP] => {
+                                    let status = crate::gps_task::startup();
+                                    webusb_reply(
+                                        &mut transport,
+                                        protocol::UsbFrameKind::Response,
+                                        header.request_id,
+                                        status.as_bytes(),
+                                    )
+                                    .await;
+                                }
+                                [protocol::spec::GET_GPS] => {
+                                    let status = crate::gps_task::status();
+                                    webusb_reply(
+                                        &mut transport,
+                                        protocol::UsbFrameKind::Response,
+                                        header.request_id,
+                                        status.as_bytes(),
+                                    )
+                                    .await;
+                                }
                                 [USB_COMMAND_GET_STATE] => {
                                     let payload = ble::KEYBOARD_STATE
                                         .lock(|state| protocol::encode_state(&state.borrow()));

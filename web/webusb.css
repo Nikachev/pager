@@ -336,3 +336,16 @@ dialog::backdrop {
     width:100%
   }
 }
+
+.gps-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin:18px 0; }
+.gps-grid dt { color:var(--muted); font-size:12px; margin-bottom:4px; }
+.gps-grid dd { margin:0; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.gps-wide { grid-column:1 / -1; }
+#board_time { font-size:22px; font-weight:650; }
+#board_time_source { margin-bottom:0; }
+
+.coordinate-value { display:flex; align-items:center; gap:8px; min-height:32px; }
+.copy-icon { display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; width:32px; height:32px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); }
+.copy-icon:hover:not(:disabled) { background:var(--accent-soft); color:var(--accent); }
+.copy-icon:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.copy-feedback:empty { display:none; }

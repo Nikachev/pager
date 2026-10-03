@@ -9,8 +9,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => {resolve=a;reject=b;}); return {promise,resolve,reject}; };
 function runtime() {
-  const context = vm.createContext({TextEncoder,TextDecoder,Uint8Array,DataView,setTimeout,clearTimeout,Date});
-  vm.runInContext(['protocol_spec.js','protocol_codec.js','usb_session.js','usb_app.js'].map(name => fs.readFileSync(path.join(root,'web',name),'utf8')).join('\n') + '\nglobalThis.api={PagerSession,PagerApp,PagerCodec,PAGER_PROTOCOL};',context);
+  const context = vm.createContext({TextEncoder,TextDecoder,Uint8Array,DataView,setTimeout,clearTimeout,Date,performance,Intl});
+  vm.runInContext(['protocol_spec.js','vendor/tz_lookup.js','protocol_codec.js','gps_view.js','usb_session.js','usb_app.js'].map(name => fs.readFileSync(path.join(root,'web',name),'utf8')).join('\n') + '\nglobalThis.api={PagerSession,PagerApp,PagerCodec,PAGER_PROTOCOL,PagerGps};',context);
   return context.api;
 }
 function stateBytes() {
@@ -35,7 +35,7 @@ class Device {
   async transferOut(endpoint,bytes){
     const request=this.api.PagerCodec.decode(bytes);this.sent.push(request);
     if(this.writeError)throw Error('write failure');
-    if(this.auto)this.frame(2,request.id,request.payload[0]===3?stateBytes():request.payload[0]===1?new TextEncoder().encode('PONG'):[0]);
+    if(this.auto)this.frame(2,request.id,request.payload[0]===14?new TextEncoder().encode('supported=0'):request.payload[0]===3?stateBytes():request.payload[0]===1?new TextEncoder().encode('PONG'):[0]);
     return {status:'ok',bytesWritten:this.shortWrite?bytes.length-1:bytes.length};
   }
 }
@@ -55,7 +55,7 @@ class Element {
   querySelector(){return this.cancelButton;}
 }
 class Document {
-  constructor(){this.elements=new Map();this.activeElement=null;for(const id of ['log','slots','usb_status','connect','disconnect','device_hint','ble_status','bluetooth_toggle','rename_device','cancel_pairing','get_logs','reboot','factory_reset','text','type','rename_dialog','slot_name_dialog','confirm_dialog','rename_input','slot_name_input','rename_save','slot_name_save','confirm_title','confirm_message','confirm_accept']){const element=new Element(this);element.id=id;this.elements.set(id,element);}
+  constructor(){this.elements=new Map();this.activeElement=null;for(const id of ['copy_coordinates','copy_coordinates_status','gps_status','gps_hint','gps_latitude','gps_longitude','board_time','board_timezone','board_time_source','log','slots','usb_status','connect','disconnect','device_hint','ble_status','bluetooth_toggle','rename_device','cancel_pairing','get_logs','reboot','factory_reset','text','type','rename_dialog','slot_name_dialog','confirm_dialog','rename_input','slot_name_input','rename_save','slot_name_save','confirm_title','confirm_message','confirm_accept']){const element=new Element(this);element.id=id;this.elements.set(id,element);}
     for(const id of ['rename_dialog','slot_name_dialog','confirm_dialog'])this.elements.get(id).cancelButton=new Element(this,'button');
   }
   getElementById(id){if(this.elements.has(id))return this.elements.get(id);const walk=nodes=>{for(const node of nodes){if(node.id===id)return node;const found=walk(node.children);if(found)return found;}};return walk(this.elements.get('slots').children);}
@@ -160,4 +160,46 @@ test('strict command ACK rejects a response with trailing bytes',async()=>{
 });
 test('unsupported browser disables connection and explains requirement',()=>{
  const api=runtime(),doc=new Document();new api.PagerApp(doc,undefined);assert.equal(doc.getElementById('connect').disabled,true);assert.match(doc.getElementById('device_hint').textContent,/Chrome/);
+});
+
+test('GPS coordinates determine IANA zone; board UTC handles summer/winter and half-hour offsets',()=>{
+ const {PagerGps}=runtime();
+ assert.equal(PagerGps.zone({lat:42.6977,lon:23.3219}),'Europe/Sofia');
+ assert.equal(PagerGps.zone({lat:40.7128,lon:-74.0060}),'America/New_York');
+ assert.equal(PagerGps.zone({lat:27.7172,lon:85.3240}),'Asia/Kathmandu');
+ assert.equal(PagerGps.time(Date.UTC(2026,6,1,12), 'Europe/Sofia'),'01.07.2026, 15:00:00');
+ assert.match(PagerGps.time(Date.UTC(2026,0,1,12), 'Europe/Sofia'),/14:00:00/);
+ assert.match(PagerGps.time(Date.UTC(2026,0,1,12), 'Asia/Kathmandu'),/17:45:00/);
+ const decode=s=>PagerGps.decode(new TextEncoder().encode(s));
+ const gps=decode('supported=1;connected=1;fix=1;satellites=8;latitude_e6=-33868800;longitude_e6=151209300;utc_ms=1791030896789;time_source=gps;time_age_ms=100');
+ assert.equal(gps.position.lat,-33.8688);assert.equal(gps.position.lon,151.2093);assert.equal(gps.utcMs,1791030896789);
+ assert.throws(()=>decode('supported=1;connected=1;fix=1;satellites=8;latitude_e6=91000000;longitude_e6=0;time_source=unsynced'),/coordinates/);
+ assert.throws(()=>decode('supported=1;supported=0'),/response/);
+});
+test('GPS view clears stale coordinates, keeps clock holdover and never substitutes computer time',async()=>{
+ const {app,doc}=await appFixture();
+ app.gps={supported:true,connected:true,position:{lat:42.6977,lon:23.3219},utcMs:Date.UTC(2026,0,1,12),source:'gps',age:100,satellites:8};
+ app.gpsZone='Europe/Sofia';app.gpsReceived=performance.now();app.renderGps();
+ assert.equal(doc.getElementById('gps_latitude').textContent,'42.697700°');
+ assert.match(doc.getElementById('board_time').textContent,/14:00:00/);
+ app.gps.position=null;app.gps.source='holdover';app.gps.age=6000;app.renderGps();
+ assert.equal(doc.getElementById('gps_latitude').textContent,'—');
+ assert.match(doc.getElementById('board_time_source').textContent,/last GPS correction/);
+ app.gpsReceived=performance.now()-6000;app.renderGps();
+ assert.equal(doc.getElementById('board_time').textContent,'Board time unavailable');
+ app.gps.utcMs=null;app.renderGps();
+ assert.equal(doc.getElementById('board_time').textContent,'Waiting for GPS time');
+ await app.disconnect();assert.equal(doc.getElementById('gps_longitude').textContent,'—');
+});
+
+test('RAM last-known position is visibly historic and cannot be copied as a current fix',async()=>{
+ const {app,doc,api}=await appFixture();
+ const gps=api.PagerGps.decode(new TextEncoder().encode('supported=1;connected=1;fix=0;satellites=0;utc_ms=0;time_source=unsynced;last_latitude_e6=42697700;last_longitude_e6=23321900;last_fix_utc_ms=1791030896789;last_fix_age_ms=12000'));
+ assert.equal(gps.position,null);assert.equal(gps.lastPosition.age,12000);
+ app.gps=gps;app.gpsReceived=performance.now();app.renderGps();
+ assert.equal(doc.getElementById('gps_latitude').textContent,'42.697700°');
+ assert.match(doc.getElementById('gps_hint').textContent,/Last known location · 12 s ago/);
+ assert.equal(doc.getElementById('copy_coordinates').disabled,true);
+ assert.equal(doc.getElementById('board_time').textContent,'Waiting for GPS time');
+ await app.disconnect();assert.equal(doc.getElementById('gps_latitude').textContent,'—');
 });

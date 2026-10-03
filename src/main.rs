@@ -10,6 +10,7 @@ compile_error!("select exactly one Pager board feature");
 mod ble;
 mod faults;
 mod flash;
+mod gps_task;
 mod led;
 mod protocol;
 mod runtime;
@@ -44,6 +45,8 @@ use panic_probe as _;
 use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
+    #[cfg(feature = "board-xiao-nrf52840")]
+    UARTE0 => embassy_nrf::buffered_uarte::InterruptHandler<embassy_nrf::peripherals::UARTE0>;
     RNG => rng::InterruptHandler<RNG>;
     EGU0_SWI0 => nrf_sdc::mpsl::LowPrioInterruptHandler;
     CLOCK_POWER => nrf_sdc::mpsl::ClockInterruptHandler;
@@ -65,6 +68,7 @@ struct AlignedBuffer<const N: usize> {
     data: [u8; N],
 }
 
+pub use runtime::clock;
 pub use runtime::diagnostics::*;
 
 pub const USB_VENDOR_ID: u16 = protocol::spec::APPLICATION_VID;
@@ -107,6 +111,28 @@ async fn main(spawner: Spawner) {
     #[cfg(feature = "board-xiao-nrf52840")]
     let led = Output::new(p.P0_26, Level::High, OutputDrive::Standard);
     spawner.spawn(unwrap!(blink_task(led)));
+
+    #[cfg(feature = "board-xiao-nrf52840")]
+    {
+        static RX: StaticCell<[u8; 1024]> = StaticCell::new();
+        static TX: StaticCell<[u8; 64]> = StaticCell::new();
+        let mut config = embassy_nrf::uarte::Config::default();
+        config.baudrate = embassy_nrf::uarte::Baudrate::Baud9600;
+        let uart = embassy_nrf::buffered_uarte::BufferedUarte::new(
+            p.UARTE0,
+            p.TIMER2,
+            p.PPI_CH0,
+            p.PPI_CH1,
+            p.PPI_GROUP0,
+            p.P1_12,
+            p.P1_11,
+            Irqs,
+            config,
+            RX.init([0; 1024]),
+            TX.init([0; 64]),
+        );
+        spawner.spawn(unwrap!(gps_task::gps_task(uart)));
+    }
 
     let flash_driver = nrf_mpsl::Flash::take(mpsl, p.NVMC);
     static FLASH_MUTEX: StaticCell<Mutex<ThreadModeRawMutex, nrf_mpsl::Flash<'static>>> =
