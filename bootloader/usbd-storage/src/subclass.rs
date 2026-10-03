@@ -50,14 +50,22 @@ impl<'a, 'alloc, Bus: UsbBus + 'alloc, Buf: BorrowMut<[u8]>>
     }
 
     pub fn pass(self) {
-        self.class.transport.set_status(CommandStatus::Passed);
+        self.class.transport.set_status(
+            CommandStatus::Passed,
+            self.class.transport.processed_bytes(),
+        );
     }
 
     pub fn fail(self) {
-        self.class.transport.set_status(CommandStatus::Failed);
+        self.class.transport.set_status(
+            CommandStatus::Failed,
+            self.class.transport.processed_bytes(),
+        );
     }
 
     pub fn fail_phase(self) {
-        self.class.transport.set_status(CommandStatus::PhaseError);
+        self.class
+            .transport
+            .set_status(CommandStatus::PhaseError, 0);
     }
 }

@@ -4,26 +4,26 @@
     {
       "name": "trouble-host",
       "repository": "https://github.com/embassy-rs/trouble",
-      "commit": "088e09c451177d5db50cf3e58c68d05512265ba0",
+      "commit": "42e3e04de00db3951b126741e1f3602bfdf5df47",
       "upstream_path": "host",
       "local_path": "vendor/trouble-host",
       "files": [
         {
           "path": "Cargo.toml",
-          "upstream_sha256": "413bffb9e2abd96b49f07a175c6131fb21c994215928e9fe9476a6933a70d2a4",
-          "local_sha256": "413bffb9e2abd96b49f07a175c6131fb21c994215928e9fe9476a6933a70d2a4",
+          "upstream_sha256": "71542a14a5a33e542bfb8762705c9b2bf4b8d329028e651edcbd1c463fc6493d",
+          "local_sha256": "118ffd73dcf26a6517e9e336e54fa9899bc4b57b866bab3c6b97426adfbfd3a1",
           "classification": "unchanged"
         },
         {
           "path": "PAGER_PATCH.md",
           "upstream_sha256": null,
-          "local_sha256": "28e156276589c5f78be2679429f4aa85d12934306c4ce32a21ec133462749b14",
+          "local_sha256": "4ff9b820e8ecd8aa2a385a3a94a21548cb3bd330fb2c709221f2956fc0b68a7a",
           "classification": "added"
         },
         {
           "path": "build.rs",
-          "upstream_sha256": "21aae36a83e2616781a28290b5ba0e695efae8a275fd56ac708ab2167f7a44aa",
-          "local_sha256": "57e13aa07f0ef1f5bf62227ab9331e67587e3d062069cac48be1c3e671ec6ba7",
+          "upstream_sha256": "a67e3d8c9b627467455f711f18e106ac083e4a39e0485cbec1d2577a1fa0fd89",
+          "local_sha256": "8b59da35d9720189ef3f8e54d8356067f6a28d8c5f9f9db3132c9e02e3c60f7f",
           "classification": "formatting"
         },
         {
@@ -52,8 +52,8 @@
         },
         {
           "path": "src/attribute_server.rs",
-          "upstream_sha256": "2a9b11173ff1307ce75ce9f132233ec6d8639dd892da5013873faabde22c042b",
-          "local_sha256": "de65596c87ae3b769ad3c222ecc222a18d0b776ad1b3345d3d2ee77031e09d94",
+          "upstream_sha256": "68c6dfcff62a389e3efc7b982de8b0237f24bfb119915ea158136502d43ad3fa",
+          "local_sha256": "90868a753cea9c47a6a603d16b507567e2b5b6c4afe838b3342910f002e2a0e0",
           "classification": "formatting"
         },
         {
@@ -88,20 +88,20 @@
         },
         {
           "path": "src/config.rs",
-          "upstream_sha256": "18e8ed5f28d13dfb793bc8df335c7cb663c2ca2c35126e3d55b36681a4c17375",
-          "local_sha256": "2f18eda085ad9611e38f2e0f9ac48d69c29f3524cb3e4016bbeb7f38e513521f",
+          "upstream_sha256": "7f07cbd6367d317d23627c62c882d3b1b673d823482d98ca05b097bcded4d0ed",
+          "local_sha256": "c968ef7ad70eec1aad62c8ffbff17f4c817b31123c0278b464ecc7e506e05e82",
           "classification": "formatting"
         },
         {
           "path": "src/connection.rs",
-          "upstream_sha256": "1884d74c3e7d7f274115bd33192268a63aa694086207239a7ea130d823e452c4",
-          "local_sha256": "e0ba9c717e7634c438e9d03a34faad3aa378415cbc122228ae3fad93b3fe5a50",
+          "upstream_sha256": "6ab7e3b26a679ee813a65aef7563feb12fe9e08c9b96e1a12d9b5ac6b2f2a836",
+          "local_sha256": "29bc27a1bb0db1058b89f9ac87c0f2979c47ed235ba3600643f5eb782df8363e",
           "classification": "formatting"
         },
         {
           "path": "src/connection_manager.rs",
-          "upstream_sha256": "bf05db58a0257ee6f86ee3b72f9a9619bf3b04e7793dd6e0dfac6f56daea290c",
-          "local_sha256": "08eb3171a07a8939a5445384559409e27a4eb109600b71914b5e0ad26c3f69ed",
+          "upstream_sha256": "aa66b3ef7cd390d9954a4ea56e8ac31bb91c44c386a3cc5ce558e90da4b69053",
+          "local_sha256": "aef7b35653767c3dd7016df38636b4c6a2702b6064ccf6629b951875d611bec0",
           "classification": "formatting"
         },
         {
@@ -124,15 +124,15 @@
         },
         {
           "path": "src/gatt.rs",
-          "upstream_sha256": "b2fa02880e33ca61df2953acade69b52e14f2ed181bbb62311a9dab54adec360",
-          "local_sha256": "6e03e73b4e693ee654a0d6880b19db43a08ba7fa80d6fedf74815246d86598a1",
+          "upstream_sha256": "a3270a85328f71396a908a247539e3be0b3e2a11141db6b66157709ea21ab0f6",
+          "local_sha256": "3cbec2c4e5b37ff028c371d199843ce13d18b132236a6e7c08cc5217d2296b08",
           "classification": "formatting"
         },
         {
           "path": "src/host.rs",
-          "upstream_sha256": "8a6cf57a1772d82314c50e289b003ac7c830658e29018a197de6078bb2d97b52",
-          "local_sha256": "7f14b871e254184cc400aa9c71e567165e4f23253e34539715b9d4cb586dfba4",
-          "classification": "modified"
+          "upstream_sha256": "09e8e51b9970f95fa469872c9406e611e622bc75a5ac18615bf49194046fda57",
+          "local_sha256": "c17e00a21ac8b648062fedd769479278713446d26e9d55855e97958c7ce36094",
+          "classification": "formatting"
         },
         {
           "path": "src/iso.rs",
@@ -154,14 +154,14 @@
         },
         {
           "path": "src/lib.rs",
-          "upstream_sha256": "e0093970e924ea68876ecd12aecf65ec81049a307e485d0d5a4075f6ef6d4553",
-          "local_sha256": "4273f102d6f3da7df93a816678e25dc5e80ed0b4305d83d24f66bd2a36ed9152",
-          "classification": "modified"
+          "upstream_sha256": "abc3422bc26d960277fd36040eb91bfd07b8fee730ff46a57bf1484388c13a48",
+          "local_sha256": "9aa07c58d523e1ca5f13a62fd0135a28a12168baaa549fd1046f7567c35aefd5",
+          "classification": "semantic"
         },
         {
           "path": "src/mock_controller.rs",
-          "upstream_sha256": "6ece3c45713200944491f7c8e74b25460cfda2a6aa7fe29f663d0765a94afd5b",
-          "local_sha256": "bb7474d33c980a503711240e4451eaefca26c7a6dc1917f67d53df0e2b0e57ac",
+          "upstream_sha256": "d8cc77e8509b6c408b11c13ad5d1be840411daa9bb36aa4852a9ea952f03222b",
+          "local_sha256": "b40396817d1bfca51195af864ceae64d50ae6a694ed17dda0698ba994922a457",
           "classification": "formatting"
         },
         {
@@ -178,9 +178,9 @@
         },
         {
           "path": "src/peripheral.rs",
-          "upstream_sha256": "0be693b6ae587fbf0b0652d590bc1378c1ba4689a862e01feaf1ba7019be7415",
-          "local_sha256": "eeb6271c519229c9d566d1fe51c9da6968418122642143350f37c155a4c02ea9",
-          "classification": "modified"
+          "upstream_sha256": "96ca78b966af7f0eba8f992c6a179b40be3260c914457ac50fc13f415efb2027",
+          "local_sha256": "d3248f5e1eda257a6c8fa5065e8c6ff7e35b0a9baae8b570bba4567fe0d51b22",
+          "classification": "semantic"
         },
         {
           "path": "src/scan.rs",
@@ -196,14 +196,14 @@
         },
         {
           "path": "src/security_manager/crypto.rs",
-          "upstream_sha256": "278f9526e026bd242080a4addcad6102b7b51bc69cb041e7801aadd5063861b1",
-          "local_sha256": "f8e6fea5c3ec195f3426211c9fe720baadc347452936fa0feec890bfbf8f5050",
+          "upstream_sha256": "15abcc0a42c7c100b3ae278b026bc449eeac6d3845991eacf2ebb77dabf4e050",
+          "local_sha256": "b331a4de4ba0c3c462fa0b39819f83f682228e263b9462f418480b01b3ebf94a",
           "classification": "formatting"
         },
         {
           "path": "src/security_manager/mod.rs",
-          "upstream_sha256": "7e2a6111f120aa3d512994b677496018551f78ed76930b77319c16b7486fec85",
-          "local_sha256": "2abb82e11fc6828e90b714eecb5c35123cab105a3127956323f3b5a5d6f868fe",
+          "upstream_sha256": "c4f25b386269cb747124c485f59c7eeec91f6449a7cf7173611baae24170dd40",
+          "local_sha256": "0bd14fa7ac880bb141a77c2b774db8918b66d6c139a272afa6e12c25ac218983",
           "classification": "formatting"
         },
         {
@@ -226,14 +226,14 @@
         },
         {
           "path": "src/security_manager/pairing/mod.rs",
-          "upstream_sha256": "99bbb19783648f78be9bb26e57dcff137d1c34370b84be357ea378ff69766915",
-          "local_sha256": "63a130c7fe9df8e271a33b003b419c90c14286d2cc6690895ae2351ede4abfc6",
+          "upstream_sha256": "963e15a5add367fc13ae1231a60975f4b7cd62f6ecef2e6598204d371a76b8ee",
+          "local_sha256": "3c4456472e69c42db0c3ce62e07fbb0b90f32b47dd2af0e3fda67633f7efbe01",
           "classification": "formatting"
         },
         {
           "path": "src/security_manager/pairing/peripheral.rs",
-          "upstream_sha256": "29171821321d62cbe2fee741ff6c6495c861daa70816798b1996650867021197",
-          "local_sha256": "0f0656806b74b7ea1ad3834174fdd499e9e83bc0700b92a6d3547687cc0e3470",
+          "upstream_sha256": "251413ee3645367813cf1a3c1049bf41ee38c8002be4956a9393c158d36e8ef8",
+          "local_sha256": "d7f809773878180c5c61350329d5929bc368481a25e5935e6a1ecf548a977c93",
           "classification": "formatting"
         },
         {
@@ -246,7 +246,7 @@
           "path": "src/security_manager/types.rs",
           "upstream_sha256": "ca6c6cf1f5c3b05430db55443e48697be3da29f61fc2e97ebd650febeb12b346",
           "local_sha256": "04d58a827e5ab9b0060e9479e5d3e4692fd2cb81ea025676db6a94e21dc9a41d",
-          "classification": "modified"
+          "classification": "formatting"
         },
         {
           "path": "src/types/capabilities.rs",
@@ -280,14 +280,14 @@
         },
         {
           "path": "src/types/uuid.rs",
-          "upstream_sha256": "64bc7e45af5ad78d5f9f8a0786177105025902179fe90928a7339d5f434e8d3b",
-          "local_sha256": "27c586d63a8a673b98987a9612d20b5e82e195b65e00a7fe11d22feea6ab1218",
+          "upstream_sha256": "38e00f5cf85e168256d3838a2021bdce4c3c57f938ff381e691ccaa2286eca64",
+          "local_sha256": "821b8b98909e70553c043f3c8cbd5bc0ce51f29ae55228123b15086480eefb96",
           "classification": "formatting"
         },
         {
           "path": "tests/common.rs",
-          "upstream_sha256": "48094d06939902b7a2a031433eb0a1075b81307b7f5ccdb10b25827726240e4a",
-          "local_sha256": "c895f30bab4a3faaa564b53050fc7440190c2c616436d5b5a9587f9916a5f40b",
+          "upstream_sha256": "108e9f294921177599292c8830c0b39d1e14904f6cb755c0654eca1ef54f996a",
+          "local_sha256": "8a7a0eceecdb05b8633ab8fe09d36024aaf68ca39643455d5889cedc6044b5ff",
           "classification": "formatting"
         },
         {
@@ -319,14 +319,14 @@
     {
       "name": "trouble-host-macros",
       "repository": "https://github.com/embassy-rs/trouble",
-      "commit": "088e09c451177d5db50cf3e58c68d05512265ba0",
+      "commit": "42e3e04de00db3951b126741e1f3602bfdf5df47",
       "upstream_path": "host-macros",
       "local_path": "vendor/host-macros",
       "files": [
         {
           "path": "Cargo.toml",
-          "upstream_sha256": "3828ba268c6a52f3ce79c447bf3d2a7d99f9f4107f0a14929d811d1f5a972b5e",
-          "local_sha256": "3828ba268c6a52f3ce79c447bf3d2a7d99f9f4107f0a14929d811d1f5a972b5e",
+          "upstream_sha256": "d10f790b702a3cb734701034610e2cb23c117f26e428396ef6692c5441f3e0c2",
+          "local_sha256": "d10f790b702a3cb734701034610e2cb23c117f26e428396ef6692c5441f3e0c2",
           "classification": "unchanged"
         },
         {
@@ -345,7 +345,7 @@
           "path": "src/lib.rs",
           "upstream_sha256": "8800c1dce5f1cd9b82c70eada9495f64f01f94f176da0012d07895b26f3976b2",
           "local_sha256": "6d9a6b4e93df57f17bd0032faadb4da21d619994405b8c773b2131ac5684fe29",
-          "classification": "formatting"
+          "classification": "semantic"
         },
         {
           "path": "src/server.rs",
@@ -370,8 +370,8 @@
     {
       "name": "usbd-storage",
       "repository": "https://github.com/apohrebniak/usbd-storage",
-      "commit": "42d422297a9b67d27050d48602dd8e0a43c4327f",
-      "upstream_path": "",
+      "commit": "f2015e7554cec0a4f1c5433b1730f01bf96cbdf8",
+      "upstream_path": "usbd-storage",
       "local_path": "bootloader/usbd-storage",
       "files": [
         {
@@ -382,27 +382,27 @@
         },
         {
           "path": ".cargo/config",
-          "upstream_sha256": "33154d8ec11fa6a1514c3792a6e28278de15e4d266d76f3acfbe2db7badf59e1",
+          "upstream_sha256": null,
           "local_sha256": "33154d8ec11fa6a1514c3792a6e28278de15e4d266d76f3acfbe2db7badf59e1",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": ".cargo_vcs_info.json",
           "upstream_sha256": null,
-          "local_sha256": "22a24a6c65ee4a0e0d92ebac29637237216db64dca7d21101df104359a673ae1",
+          "local_sha256": "ffe7a15ed68a8ddb8e8b6e063714bc004126fcf82edc7a91b2cd902b2ae2cf88",
           "classification": "added"
         },
         {
           "path": ".gitignore",
-          "upstream_sha256": "f5fece39944eee2dd58689aa33811a0b028136e064e4d797f399aa15e7ab7f99",
+          "upstream_sha256": null,
           "local_sha256": "f5fece39944eee2dd58689aa33811a0b028136e064e4d797f399aa15e7ab7f99",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": "CHANGELOG.md",
-          "upstream_sha256": "bbc088ff30004368b08e00f6ab54d5c1b8cc2745dd30e1d5a6a1eb5ee61d3eaa",
+          "upstream_sha256": null,
           "local_sha256": "bbc088ff30004368b08e00f6ab54d5c1b8cc2745dd30e1d5a6a1eb5ee61d3eaa",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": "Cargo.lock",
@@ -412,99 +412,117 @@
         },
         {
           "path": "Cargo.toml",
-          "upstream_sha256": "3a6d0566b4130a42a9c0396ca656db6f449ac781c0b68f8c017b85936b79f999",
-          "local_sha256": "3845480fb2e1730d07df21cd718435ae3ff05892bbf6313a0851f7da28f79f7a",
-          "classification": "modified"
+          "upstream_sha256": "ddd5c09c6483305e39f99836ee65389d5aa331b4373262f33a1a39b020078654",
+          "local_sha256": "09cc66d9bb206c9f54963b7509c623e395bd259e4b87e0040d743d1a02e9073c",
+          "classification": "packaging"
+        },
+        {
+          "path": "Cargo.toml.orig",
+          "upstream_sha256": null,
+          "local_sha256": "1313565a899b60e9458982fcce1c0dee1be8c50777d3216dafa6ce1733a5b4c4",
+          "classification": "added"
         },
         {
           "path": "Embed.toml",
-          "upstream_sha256": "a497d60bf4a70554225ec96190eca568ea6a5f5b8b2b7f606af907e683a64815",
+          "upstream_sha256": null,
           "local_sha256": "a497d60bf4a70554225ec96190eca568ea6a5f5b8b2b7f606af907e683a64815",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": "LICENSE",
-          "upstream_sha256": "d07c7ea448a304bd5d2d599a971b4e60589490b82a860ac955125d9fcb628006",
+          "upstream_sha256": null,
           "local_sha256": "d07c7ea448a304bd5d2d599a971b4e60589490b82a860ac955125d9fcb628006",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": "README.md",
-          "upstream_sha256": "543c7f71eeffb9c790e20d70a72c55838006f978c264c831a8c194103d9e54dc",
-          "local_sha256": "8651e3bd16c3ec60eace932172704449c5ead55cc58baca4620526eb922335f0",
-          "classification": "modified"
+          "upstream_sha256": "a070900ef9cbd64cdbdd59f9bc07754a2d68b075daa01950162163497d8d8a76",
+          "local_sha256": "a070900ef9cbd64cdbdd59f9bc07754a2d68b075daa01950162163497d8d8a76",
+          "classification": "unchanged"
         },
         {
           "path": "examples/cat_fat12.img",
-          "upstream_sha256": "a6b9950f09f27aabb425c532be6a8b9694cb6836022a766d40e605ce718b54bf",
+          "upstream_sha256": null,
           "local_sha256": "a6b9950f09f27aabb425c532be6a8b9694cb6836022a766d40e605ce718b54bf",
-          "classification": "unchanged"
-        },
-        {
-          "path": "examples/stm32f411x_scsi_bbb.rs",
-          "upstream_sha256": "c748dbbaea7fef77a08e7441d14d35871053e9a5e984040143495ccc62bafbf0",
-          "local_sha256": null,
-          "classification": "removed"
-        },
-        {
-          "path": "examples/stm32f411x_ufi_bbb.rs",
-          "upstream_sha256": "b8c6fa4ea8cfa7549bfb7239b5e0e48cea2004fea97b48983b6c167c96e78dca",
-          "local_sha256": null,
-          "classification": "removed"
+          "classification": "added"
         },
         {
           "path": "memory.x",
-          "upstream_sha256": "3456ef91867e42c130d2cfbde4c389d6cfc64f7b2cdcc9967d44ff17e1e63d17",
+          "upstream_sha256": null,
           "local_sha256": "3456ef91867e42c130d2cfbde4c389d6cfc64f7b2cdcc9967d44ff17e1e63d17",
-          "classification": "unchanged"
+          "classification": "added"
         },
         {
           "path": "src/buffer.rs",
-          "upstream_sha256": "5ad56d7c8056b790a34bf44d62cab27678d07d97e376247c6f10dd5b8e01cb28",
-          "local_sha256": "33862d29dab188420c9302008081807f9564093bb4f18224a11696b036b47a2e",
-          "classification": "modified"
+          "upstream_sha256": "78048458ab70c66fe0136dd4d42d9011d50e4916edd53ec6c84683ce3691d081",
+          "local_sha256": "78048458ab70c66fe0136dd4d42d9011d50e4916edd53ec6c84683ce3691d081",
+          "classification": "unchanged"
         },
         {
           "path": "src/fmt.rs",
-          "upstream_sha256": "08b142129ad54789e1ef3a55d714d646c15dcca9b0ba8af1ebb9945244f66db5",
-          "local_sha256": "08b142129ad54789e1ef3a55d714d646c15dcca9b0ba8af1ebb9945244f66db5",
+          "upstream_sha256": "9960c1490d4ad7e5438bed445ebf61951f6e73d6b3b990b2e4d3973a89bc6515",
+          "local_sha256": "9960c1490d4ad7e5438bed445ebf61951f6e73d6b3b990b2e4d3973a89bc6515",
           "classification": "unchanged"
         },
         {
           "path": "src/lib.rs",
-          "upstream_sha256": "fdc232d61051bf3d45955ab4398a00de76f6258e2611333850a9a60a260deafa",
-          "local_sha256": "53633ab9159d49c7f7495d47b4404cf862c437092552403781b60324a870ee9d",
-          "classification": "modified"
+          "upstream_sha256": "3463da48f214fc77c58dea7dc5232f8e9303168bf0f66437e842e5e34db38612",
+          "local_sha256": "cc453505d18291f21ceeb6c88c13ad31c5a2cd414e5bbceb4a964ba36c84e3d1",
+          "classification": "unchanged"
         },
         {
-          "path": "src/subclass/mod.rs",
-          "upstream_sha256": "d8a1bef1984afb7d9d3de5f7aa4852e480b5458539d58a4843696c6e473045bb",
-          "local_sha256": "631d4a84d88cd50467156ac2d1f57359de6c239b6f042672805491095340086e",
-          "classification": "modified"
+          "path": "src/subclass.rs",
+          "upstream_sha256": "e86fa5a408b7a15cc72cb9ce363620982397c6401dad3c263bd415d640521dd7",
+          "local_sha256": "1c05cad0afac322e2adb7307235dcc6c9b6c839df6135464423368941dc9954a",
+          "classification": "semantic"
         },
         {
           "path": "src/subclass/scsi.rs",
-          "upstream_sha256": "9bd8e99236930b0a23a0514b598774580837ab14a8479b1ccf543595c1b566b0",
-          "local_sha256": "87db219af0bb921f22ea5c2428d9693d4cf63fdac8222a373ce42b78ed03a6b3",
-          "classification": "modified"
+          "upstream_sha256": "469d3db193aa8bd76c00c1a94ce7b5c526d58573e0e5713520a11aa7d9663cf8",
+          "local_sha256": "59f4a6b7b71654d2f83eb9a65a89b6582adc97ba3b9d45c5d5b7539067f46429",
+          "classification": "semantic"
         },
         {
           "path": "src/subclass/ufi.rs",
-          "upstream_sha256": "ad11bd870c1c21931c819740b694314360b9de129a3340ec0b7a120534130aff",
+          "upstream_sha256": "3d0fa12f5c0ddf759b89ea0e3b3222ab7671308388f6606c663cfe05831310e9",
           "local_sha256": null,
           "classification": "removed"
         },
         {
-          "path": "src/transport/bbb.rs",
-          "upstream_sha256": "122c43438a1995345fb75aee7b3b6963a0079b9464e64e0128998ee67a51c6fb",
-          "local_sha256": "43be787936766b3c50582a845d76ebd52b91b6a64b9cd8aa3320e771ddd4484b",
-          "classification": "modified"
+          "path": "src/transport.rs",
+          "upstream_sha256": "6df4b7e6dfb918b4ecd33cacd61f3770275b53f3b2bd0ad2d03f1a662ccd0523",
+          "local_sha256": "6df4b7e6dfb918b4ecd33cacd61f3770275b53f3b2bd0ad2d03f1a662ccd0523",
+          "classification": "unchanged"
         },
         {
-          "path": "src/transport/mod.rs",
-          "upstream_sha256": "323a40bfbb4507b33ae7c9ea87b2472232b2f2769222da2273121b1c90b9c94b",
-          "local_sha256": "323a40bfbb4507b33ae7c9ea87b2472232b2f2769222da2273121b1c90b9c94b",
-          "classification": "unchanged"
+          "path": "src/transport/bbb.rs",
+          "upstream_sha256": "f1e7c0f64e0d3f29404133571ba20db02d9f958f5679cf7efb35b636f47fa9b5",
+          "local_sha256": "381a126979024f55775ccf6c306a924ce083b8816db0e5ba9d50edd2ee71388f",
+          "classification": "semantic"
+        },
+        {
+          "path": "tests/common/bbb.rs",
+          "upstream_sha256": "344e4c782dfa4bd5b1d51305db4440f438f556db6d2e6715da7d2d02f9a9bc81",
+          "local_sha256": null,
+          "classification": "removed"
+        },
+        {
+          "path": "tests/common/mod.rs",
+          "upstream_sha256": "fba78ef98bab5010ab6bace0ce287203610397bb692682d5e4b1d3913ef7ca8d",
+          "local_sha256": null,
+          "classification": "removed"
+        },
+        {
+          "path": "tests/common/scsi.rs",
+          "upstream_sha256": "9c6f64539de55a440888b5fdcc96ea33e68cdc13e20d2e499f4244e1151ea067",
+          "local_sha256": null,
+          "classification": "removed"
+        },
+        {
+          "path": "tests/scsi_bbb.rs",
+          "upstream_sha256": "af2dc2d76ae2085dac76291c4a49837ac7d91013c13f5e387d83d662f25877b9",
+          "local_sha256": null,
+          "classification": "removed"
         }
       ]
     },

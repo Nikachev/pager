@@ -1,7 +1,16 @@
 # Autonomous control pages
 
-Open `webusb_client.html` in a WebUSB-capable browser such as Chrome and select
-Pager with **Connect USB**. Keep other WebUSB pages and Python USB tools
+Run `make serve-ui` and open
+[USB control](http://localhost:8000/webusb_client.html) in Chrome. This generates
+the standalone pages and serves only `dist/ui/` on the local loopback interface.
+If port 8000 is already in use, stop the previous server first. Stop with Ctrl+C.
+The Bluetooth guide is at `http://localhost:8000/ble_client.html`.
+
+Select Pager with **Connect USB** and confirm the browser's device picker.
+`localhost` supports WebUSB's secure-context requirement without HTTPS. Serving
+the page avoids restrictions of some browser/automation routes on `file://`;
+it does not grant USB permission or add WebUSB support to a browser. The generated
+HTML remains autonomous and can be opened directly where the browser supports it. Keep other WebUSB pages and Python USB tools
 disconnected while this page owns the device. **Disconnect USB** releases the
 interface and closes the device; reconnecting starts a new reader and request
 queue. Unsupported browsers show an explanation with the connect button disabled.
@@ -59,8 +68,7 @@ cannot establish actual browser focus, VoiceOver output or rendered BLE text.
 ## Hardware acceptance
 
 Use one known XIAO with Mac in slot 1, Android in slot 2 and slot 3 empty. Record the
-installed version/identity and test results in a qualification report; see
-[final validation](FINAL_VALIDATION.md) for the completed hardware matrix.
+installed version/identity and test results in a dated report under `reports/`.
 
 1. Connect the USB page; verify slot/radio state and HID-ready Send availability.
 2. Change the device name and slot alias, then restore their original values.

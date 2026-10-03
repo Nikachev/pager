@@ -26,3 +26,16 @@ separate operations. Clearing removes only that slot; selecting it afterward
 starts pairing. A failed occupied-slot reconnect leaves it active. Slot aliases
 default to the peer MAC and can be renamed independently. Advertising uses the
 common name plus an automatic ` 1`, ` 2`, or ` 3` suffix.
+
+A peer identity occupies at most one slot. Pairing it in another slot removes
+its old bond, CCCD flags and alias. Use a third host to test slot 3 while retaining
+the first two pairs.
+
+## Diagnosing connection readiness
+
+A host's “paired” label does not prove Pager committed a bond or reached HID
+readiness. Check the occupied slot, connected profile, encryption and keyboard
+notification subscription before testing rendered input. Reconnect timing varies;
+preserve state and BLE logs on timeout before retrying. Intermittent Mac readiness
+timeouts and incomplete Android re-pairing have been observed; their causes are
+not yet established. A successful retry does not establish that a failure is fixed.

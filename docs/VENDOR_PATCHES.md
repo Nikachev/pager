@@ -8,26 +8,37 @@ when changing a vendor patch; the checker never rewrites it.
 
 | Package | Exact upstream | Local semantics |
 | --- | --- | --- |
-| Trouble host 0.7.0 | [088e09c](https://github.com/embassy-rs/trouble/tree/088e09c451177d5db50cf3e58c68d05512265ba0/host) | Runtime SMP/on-air address synchronization; persistent advertising-set handles and prepared-set re-enable; peripheral security mutex feature gates. |
-| Trouble host macros 0.5.0 | [Same commit](https://github.com/embassy-rs/trouble/tree/088e09c451177d5db50cf3e58c68d05512265ba0/host-macros) | No semantic patch; formatting only. |
-| usbd-storage 0.2.0 | [42d4222](https://github.com/apohrebniak/usbd-storage/tree/42d422297a9b67d27050d48602dd8e0a43c4327f) | SCSI-only subset, START STOP/SYNCHRONIZE CACHE support, descriptor simplification, BOT status/short-read handling, bounded buffer reads, safe shift, and local CBW generations. |
+| Trouble host 0.8.0 | [42e3e04](https://github.com/embassy-rs/trouble/tree/42e3e04de00db3951b126741e1f3602bfdf5df47/host) | Runtime SMP/on-air address synchronization; persistent advertising-set handles and prepared-set re-enable. |
+| Trouble host macros 0.6.0 | [Same commit](https://github.com/embassy-rs/trouble/tree/42e3e04de00db3951b126741e1f3602bfdf5df47/host-macros) | No semantic patch; formatting only. |
+| usbd-storage 3.0.0 | [f2015e7](https://github.com/apohrebniak/usbd-storage/tree/f2015e7554cec0a4f1c5433b1730f01bf96cbdf8/usbd-storage) | Pager SCSI/command compatibility, START STOP/SYNCHRONIZE CACHE, strict CDB validation, descriptor simplification, processed-byte accounting, and local CBW generations. Upstream BOT 3.0 supplies short-transfer and bounded-read handling. |
 | embassy-nrf 0.11.0 | [3861d30](https://github.com/embassy-rs/embassy/tree/3861d3088da30d40c777dc05d282352e68ec5511/embassy-nrf) | Remove the second OUT endpoint arm after DMA completion; retain initial enable. Applies to application and bootloader. |
 
 Trouble Rust files have formatting changes from the upstream 120-column/2024
 configuration to this repository's 100-column/2021 formatting, plus a trimmed
 comment whitespace change. After normalizing formatting, the semantic Trouble
-diffs are limited to `host.rs`, `lib.rs`, and `peripheral.rs`; see
+diffs are limited to `lib.rs` and `peripheral.rs`; see
 `vendor/trouble-host/PAGER_PATCH.md`. Both upstream licenses are preserved as
 `vendor/LICENSE-MIT` and `vendor/LICENSE-APACHE`.
 
 usbd-storage retains its MIT license and `.cargo_vcs_info.json` source commit.
 The copied registry Cargo manifest/lock and package markers differ from the Git
-source and are declared in the inventory. UFI and its examples are excluded;
-Pager only compiles SCSI/BOT. Dependency compatibility edits are in the manifest.
+source and are declared in the inventory. UFI and examples are excluded; Pager
+only compiles SCSI/BOT.
+Registry integration tests are excluded because they target the unmodified
+command API; upstream BOT unit tests and Pager CDB/accounting tests are retained.
+Dependency compatibility edits are in the manifest.
 The READ/WRITE(10) endian heuristic was removed during inventory review: all LBA
 and count fields now use SCSI big-endian decoding. Truncated CDBs and unsupported
 READ CAPACITY(16) service actions return Unknown; the Pager adapter rejects virtual
 disk ranges beyond its advertised capacity before I/O.
+
+Trouble's runtime address setter keeps SMP identity synchronized with the
+selected slot's on-air address without changing the controller-global address.
+Persistent advertising handles preserve the slot-to-set mapping; prepared-set
+re-enable avoids rewriting identity/parameters while still refreshing advertising
+and scan-response data. Upstream 0.8.0 does not provide these runtime operations.
+Its security mutex feature gates already support peripheral-only security, so
+Pager carries no local workaround for those gates.
 
 ## Updating a dependency
 
@@ -49,8 +60,8 @@ exact CSW status/residue/tag checks, and application UF2 malformed/incomplete/
 reordered/duplicate refusal and recovery on both boards. Bootloader replacement
 uses the signed chip-bound updater before testing the new implementation.
 
-The pinned nrf-sdc/nrf-mpsl revision remains
-`f54b6389ffa2750d4d3a4f5435660cb66b47e51a`; its central+peripheral feature workaround
+The pinned nrf-sdc/nrf-mpsl revision is now
+`e44e619d15eba9145453e3b2d7b07121556871ab`; its central+peripheral feature workaround
 is separate from Trouble's peripheral-only role and is not removed by this patch.
 
 The nRF HAL is copied from the published 0.11.0 crate, with its normalized Cargo

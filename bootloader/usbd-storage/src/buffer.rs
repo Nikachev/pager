@@ -20,7 +20,7 @@ impl<T: BorrowMut<[u8]>> Buffer<T> {
         self.wpos - self.rpos
     }
 
-    pub fn available_write(&self) -> usize {
+    fn available_write(&self) -> usize {
         self.inner.borrow().len() - self.wpos
     }
 
@@ -71,14 +71,15 @@ impl<T: BorrowMut<[u8]>> Buffer<T> {
         })
     }
 
-    /// Read only the destination capacity; retain the unconsumed suffix.
-    pub fn read_into(&mut self, dst: &mut [u8]) -> usize {
-        self.read(|bytes| {
-            let length = min(dst.len(), bytes.len());
-            dst[..length].copy_from_slice(&bytes[..length]);
-            Ok::<usize, ()>(length)
-        })
-        .unwrap()
+    pub fn fill_up_to(&mut self, value: u8, up_to: usize) {
+        if self.available_write() < up_to {
+            self.shift();
+        }
+        let count = min(self.available_write(), up_to);
+        let inner = self.inner.borrow_mut();
+        inner[self.wpos..(self.wpos + count)].fill(value);
+        self.wpos += count;
+        debug_assert!(self.wpos <= inner.len());
     }
 
     pub fn clean(&mut self) {
@@ -174,18 +175,48 @@ mod tests {
         assert_eq!(10, buf.available_read());
         assert_eq!(0, buf.available_write());
     }
+
     #[test]
-    fn partial_destinations_retain_every_remaining_byte() {
+    fn fill_up_to_when_space_available() {
         let mut buf = Buffer::new([0u8; 10]);
-        buf.write(&DATA);
-        let mut first = [0; 3];
-        assert_eq!(buf.read_into(&mut first), 3);
-        assert_eq!(first, [0, 1, 2]);
-        assert_eq!(buf.read_into(&mut []), 0);
-        let mut rest = [255; 10];
-        assert_eq!(buf.read_into(&mut rest), 7);
-        assert_eq!(&rest[..7], &DATA[3..]);
-        assert_eq!(&rest[7..], &[255; 3]);
-        assert_eq!(buf.available_read(), 0);
+
+        buf.fill_up_to(0xFF, 7);
+
+        assert_eq!(0, buf.rpos);
+        assert_eq!(7, buf.wpos);
+
+        assert_eq!(
+            Ok::<usize, ()>(7),
+            buf.read(|buf| {
+                assert_eq!(7, buf.len());
+                assert!(buf.iter().all(|b| *b == 0xFF));
+                Ok(7)
+            })
+        );
+    }
+
+    #[test]
+    fn fill_up_to_shift() {
+        let mut buf = Buffer::new([0u8; 10]);
+        // write
+        assert_eq!(8, buf.write(&DATA[..8]));
+        assert_eq!(8, buf.available_read());
+        assert_eq!(2, buf.available_write());
+
+        // read some data
+        assert_eq!(
+            Ok::<usize, ()>(7),
+            buf.read(|buf| {
+                assert_eq!(8, buf.len());
+                Ok(7)
+            })
+        );
+        assert_eq!(1, buf.available_read());
+        assert_eq!(2, buf.available_write());
+
+        // write again
+        buf.fill_up_to(0xFF, 10);
+        assert_eq!(10, buf.available_read());
+        assert_eq!(0, buf.available_write());
     }
 }

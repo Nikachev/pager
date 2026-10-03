@@ -1,8 +1,8 @@
 # Local development builds
 
-Use Python 3.14 or later: the tools use Python 3.14 exception syntax. The checked
-session uses Python 3.14.7, Rust 1.96.0, Node 26.10.0, and the dependencies pinned
-in `tests/requirements.txt`. Install the `thumbv7em-none-eabihf` Rust target and
+Use Python 3.14 or later: the tools use Python 3.14 exception syntax. Install
+the dependencies pinned in `tests/requirements.txt`, the
+`thumbv7em-none-eabihf` Rust target and
 `cargo-binutils`/`llvm-tools-preview` for `rust-objcopy`. Node runs the shared
 protocol vectors; the standalone HTML pages have no runtime network dependencies.
 
@@ -50,7 +50,7 @@ public key fingerprint where relevant, and per-artifact SHA-256 checksums. The
 source hash sorts and deduplicates tracked and nonignored paths and hashes path
 length, path, presence marker, and content digest. Deleted tracked paths retain a
 missing marker. `keys/`, `dist/`, `.venv/`, and `.git/` are excluded. The fingerprint
-identifies the checkout at packaging time; subsequent journal edits change the
+identifies the checkout at packaging time; subsequent source or report edits change the
 checkout hash without changing that saved package. Private keys and bond material
 are never included in package metadata. Preserve the existing development key.
 

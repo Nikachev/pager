@@ -1,7 +1,7 @@
 # Pager advertising-set identity patch
 
 Upstream source: `embassy-rs/trouble` commit
-`088e09c451177d5db50cf3e58c68d05512265ba0`.
+`42e3e04de00db3951b126741e1f3602bfdf5df47`.
 
 Pager adds only `Stack::set_runtime_local_address()`. Extended advertising can
 assign a random-static address to an advertising set without changing the
@@ -18,12 +18,15 @@ its parameters or identity after it has previously accepted a connection. It
 refreshes advertising and scan-response data before Enable, so pairing
 discoverability flags and renamed local names never remain from an older use.
 
-Pager also fixes the feature gate on the security command mutex imports in
-`host.rs`; security in a peripheral-only build uses that mutex and must not
-require Trouble's unrelated `central` feature.
+Trouble 0.8.0 fixes the security command mutex feature gate upstream. The old
+`host.rs` patch has been dropped; peripheral-only security builds use the upstream
+imports unchanged. The remaining advertising methods follow the new upstream
+`extended-advertising` feature gate. Extended interval parameters use the new
+HCI extended duration type; enable timeouts retain the ordinary HCI duration.
 
 The complete file/hash inventory is `vendor/PATCHES.json`, with maintenance and
 regression requirements in `docs/VENDOR_PATCHES.md`. The host-macros copy has no
 semantic delta from the same commit; the Rust copies also contain formatting and
-comment whitespace changes. The advertising, host-address, and mutex feature
-patches above are the complete semantic Trouble changes at this checkpoint.
+comment whitespace changes. The advertising and host-address patches above are the remaining semantic
+changes. A host test switches SMP identities and verifies that no HCI command
+is issued. Dated dependency decisions and hardware validation are archived in `reports/`.

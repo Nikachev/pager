@@ -134,13 +134,13 @@ Local build layout, version semantics, provenance, offline checks and gates are
 documented in [docs/BUILDING.md](docs/BUILDING.md); pinned vendor changes and
 required regressions are in [docs/VENDOR_PATCHES.md](docs/VENDOR_PATCHES.md).
 
-The autonomous USB/Bluetooth clients and their checks are documented in [WEB_UI.md](docs/WEB_UI.md).
+Run `make serve-ui` to serve the autonomous USB/Bluetooth pages locally, then open
+[USB control](http://localhost:8000/webusb_client.html) in Chrome. See
+[WEB_UI.md](docs/WEB_UI.md) for USB permissions and checks.
 
-## Development validation checkpoint
+## Documentation
 
-The 2026-10-02 implementation cycle is complete on nice!nano v2 and original
-XIAO nRF52840. See [final validation](docs/FINAL_VALIDATION.md) for exact package
-versions, test counts, USB/BLE measurements, actual Mac/Android text, persistence,
-bootloader updates and the scope of the last read-only metadata optimization.
-Reconnect tails and timing variability are documented; production keys, VID/PID,
-anti-rollback, release CI, current measurements and Android USB OTG remain deferred.
+Operating and development guides live in [docs/](docs/). Work required before
+public release is tracked in [RELEASE_TASKS.md](RELEASE_TASKS.md).
+Dated validation results and experiment history are kept separately in
+[reports/](reports/README.md).

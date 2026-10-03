@@ -12,6 +12,8 @@ use embassy_sync::waitqueue::WakerRegistration;
 #[cfg(feature = "security")]
 use embassy_time::TimeoutError;
 
+#[cfg(feature = "subrating")]
+use crate::connection::SubratingParams;
 use crate::connection::{ConnParams, Connection, ConnectionEvent, SecurityLevel};
 use crate::host::EventHandler;
 use crate::pdu::Pdu;
@@ -218,6 +220,15 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
         self.connection(index).events.try_send(event).unwrap();
     }
 
+    /// A subrate factor of 1 means every connection event is used, the connection is not subrated.
+    #[cfg(feature = "subrating")]
+    fn subrating(subrate_factor: u16, continuation_number: u16) -> Option<SubratingParams> {
+        (subrate_factor > 1).then_some(SubratingParams {
+            subrate_factor,
+            continuation_number,
+        })
+    }
+
     pub(crate) fn post_handle_event(
         &self,
         handle: ConnHandle,
@@ -225,17 +236,37 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
     ) -> Result<(), Error> {
         for entry in self.connections.borrow_mut().iter_mut() {
             if entry.state == ConnectionState::Connected && handle == entry.handle {
-                if let ConnectionEvent::ConnectionParamsUpdated {
-                    conn_interval,
-                    peripheral_latency,
-                    supervision_timeout,
-                } = event
-                {
-                    entry.params = ConnParams {
+                match event {
+                    ConnectionEvent::ConnectionParamsUpdated {
                         conn_interval,
                         peripheral_latency,
                         supervision_timeout,
+                    } => {
+                        // Changing the connection interval resets subrating.
+                        #[cfg(feature = "subrating")]
+                        if conn_interval != entry.params.conn_interval {
+                            entry.subrating_params = None;
+                        }
+                        entry.params = ConnParams {
+                            conn_interval,
+                            peripheral_latency,
+                            supervision_timeout,
+                        }
                     }
+                    // The subrate procedure leaves the connection interval alone.
+                    #[cfg(feature = "subrating")]
+                    ConnectionEvent::SubratingParamsUpdated {
+                        subrate_factor,
+                        peripheral_latency,
+                        continuation_number,
+                        supervision_timeout,
+                    } => {
+                        entry.params.peripheral_latency = peripheral_latency;
+                        entry.params.supervision_timeout = supervision_timeout;
+                        entry.subrating_params =
+                            Self::subrating(subrate_factor, continuation_number);
+                    }
+                    _ => {}
                 }
 
                 entry
@@ -366,6 +397,11 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
 
     pub(crate) fn params(&self, index: u8) -> ConnParams {
         self.connection(index).params
+    }
+
+    #[cfg(feature = "subrating")]
+    pub(crate) fn subrating_params(&self, index: u8) -> Option<SubratingParams> {
+        self.connection(index).subrating_params
     }
 
     pub(crate) fn set_att_mtu(&self, index: u8, mtu: u16) {
@@ -573,6 +609,10 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
                 storage.peer_identity = identity;
                 storage.role = role;
                 storage.params = params;
+                #[cfg(feature = "subrating")]
+                {
+                    storage.subrating_params = None;
+                }
                 #[cfg(feature = "security")]
                 {
                     storage.bond_rejected = false;
@@ -981,7 +1021,14 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
         {
             for storage in self.connections.borrow().iter() {
                 match storage.state {
-                    ConnectionState::Connected if storage.handle == handle => {
+                    // Also handle SMP while the connection is still `Connecting`.
+                    // A central can send its Pairing Request as soon as the link is
+                    // up, before the peripheral has `accept()`ed the connection; if
+                    // we only match `Connected` here that packet is silently dropped
+                    // and pairing never starts.
+                    ConnectionState::Connected | ConnectionState::Connecting
+                        if storage.handle == handle =>
+                    {
                         if storage.smp_timeout {
                             warn!("Ignoring security channel packet after SMP timeout");
                             return Ok(());
@@ -1033,7 +1080,9 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
         C: crate::ControllerCmdSync<bt_hci::cmd::le::LeLongTermKeyRequestReply>
             + crate::ControllerCmdAsync<bt_hci::cmd::le::LeEnableEncryption>,
     {
-        use bt_hci::cmd::le::{LeEnableEncryption, LeLongTermKeyRequestReply};
+        #[cfg(feature = "central")]
+        use bt_hci::cmd::le::LeEnableEncryption;
+        use bt_hci::cmd::le::LeLongTermKeyRequestReply;
 
         match _event {
             crate::security_manager::SecurityEventData::SendLongTermKey(handle, ediv, rand) => {
@@ -1071,6 +1120,7 @@ impl<'d, P: PacketPool> ConnectionManager<'d, P> {
             crate::security_manager::SecurityEventData::EnableEncryption(handle, bond_info) => {
                 let role = self.connection_by_handle(handle).map(|x| x.role);
                 if let Some(role) = role {
+                    #[cfg(feature = "central")]
                     if LeConnRole::Central == role {
                         #[cfg(feature = "legacy-pairing")]
                         let (ediv, rand) = (bond_info.ediv, bond_info.rand);
@@ -1238,6 +1288,8 @@ pub struct ConnectionStorage<P> {
     pub role: LeConnRole,
     pub peer_identity: Identity,
     pub params: ConnParams,
+    #[cfg(feature = "subrating")]
+    pub subrating_params: Option<SubratingParams>,
     pub att_mtu: Option<NonZeroU16>,
     pub link_credits: usize,
     pub link_credit_waker: WakerRegistration,
@@ -1358,6 +1410,8 @@ impl<P> ConnectionStorage<P> {
                 irk: None,
             },
             params: ConnParams::new(),
+            #[cfg(feature = "subrating")]
+            subrating_params: None,
             att_mtu: None,
             link_credits: 0,
             link_credit_waker: WakerRegistration::new(),

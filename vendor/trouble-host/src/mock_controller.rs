@@ -17,6 +17,12 @@ impl embedded_io::ErrorType for MockController {
 }
 
 impl bt_hci::controller::blocking::Controller for MockController {
+    type Buffer<'a> = [u8; 259];
+
+    fn alloc_buf(&self) -> Result<Self::Buffer<'_>, Self::Error> {
+        Ok([0u8; 259])
+    }
+
     fn write_acl_data(&self, packet: &bt_hci::data::AclPacket) -> Result<(), Self::Error> {
         todo!()
     }
@@ -52,14 +58,14 @@ impl bt_hci::controller::blocking::Controller for MockController {
 
     fn read<'a>(
         &self,
-        buf: &'a mut [u8],
+        buf: &'a mut Self::Buffer<'_>,
     ) -> Result<bt_hci::ControllerToHostPacket<'a>, Self::Error> {
         todo!()
     }
 
     fn try_read<'a>(
         &self,
-        buf: &'a mut [u8],
+        buf: &'a mut Self::Buffer<'_>,
     ) -> Result<
         bt_hci::ControllerToHostPacket<'a>,
         bt_hci::controller::blocking::TryError<Self::Error>,
@@ -69,6 +75,12 @@ impl bt_hci::controller::blocking::Controller for MockController {
 }
 
 impl bt_hci::controller::Controller for MockController {
+    type Buffer<'a> = [u8; 259];
+
+    fn alloc_buf(&self) -> Result<Self::Buffer<'_>, Self::Error> {
+        Ok([0u8; 259])
+    }
+
     fn write_acl_data(
         &self,
         packet: &bt_hci::data::AclPacket,
@@ -92,7 +104,7 @@ impl bt_hci::controller::Controller for MockController {
 
     fn read<'a>(
         &self,
-        buf: &'a mut [u8],
+        buf: &'a mut Self::Buffer<'_>,
     ) -> impl Future<Output = Result<bt_hci::ControllerToHostPacket<'a>, Self::Error>> {
         async { todo!() }
     }

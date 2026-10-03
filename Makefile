@@ -20,11 +20,16 @@ XTASK       ?= cargo run --locked --target $(HOST_TARGET) --package xtask --
 
 .DEFAULT_GOAL := build
 
-.PHONY: vendor-check bootloader-updater update-bootloader updater-clippy ci quality-fast python-lint clippy-host all build build-release check clippy fmt verify quality bootloader bootloader-release xiao-installer xiao-installer-release install-xiao install-xiao-release test test-hil test-dfu test-flash test-all flash flash-uf2 flash-swd flash-bootloader monitor info clean clean-dist clean-all help
+.PHONY: serve-ui vendor-check bootloader-updater update-bootloader updater-clippy ci quality-fast python-lint clippy-host all build build-release check clippy fmt verify quality bootloader bootloader-release xiao-installer xiao-installer-release install-xiao install-xiao-release test test-hil test-dfu test-flash test-all flash flash-uf2 flash-swd flash-bootloader monitor info clean clean-dist clean-all help
 
 all: verify build
 
 ## 🔨 Build & Quality Targets
+serve-ui:
+	@$(XTASK) build-ui
+	@echo "USB control: http://localhost:8000/webusb_client.html"
+	@$(PYTHON) -m http.server 8000 --bind 127.0.0.1 --directory dist/ui
+
 build:
 	@$(XTASK) build
 
@@ -203,6 +208,7 @@ clean-all: clean clean-dist
 
 help:
 	@echo "Available targets:"
+	@echo "  serve-ui       Build and serve control pages on localhost:8000"
 	@echo "  build          Build dev firmware in dist/<board>/dev/app"
 	@echo "  bootloader     Build 48 KiB development bootloader"
 	@echo "  test           Run non-destructive tests (safe, does NOT flash hardware)"

@@ -50,8 +50,8 @@ still contain old keys until journal page erasure. It does not promise physical
 key deletion. An explicitly opted-in development fault image additionally
 supports storage erasure: both pages are erased and verified before fresh state
 is committed. That control is unavailable in normal builds and forbidden in
-release builds. See `tools/test_runtime_faults.py` and the implementation journal
-for controlled fault qualification.
+release builds. Use `tools/test_runtime_faults.py` for controlled fault
+qualification and preserve results in a dated report.
 
 Qualification distinguishes fresh-state validation from update preservation.
 Ordinary app and bootloader updates compare public durable state before/after;

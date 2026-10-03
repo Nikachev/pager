@@ -1,10 +1,15 @@
-# Этап 9: финальная проверка (2026-10-02)
+# Этап 9: финальная проверка (2026-10-02, архив)
 
 Этап 9 завершён 2026-10-02. Последние выбранные app-пакеты:
 nice26.10.0-02114526 и XIAO26.10.0-02114532; подписанные обновления загрузчика,
 UF2 recovery, сохранение настроек и Mac/Android rendered HID подтверждены на обеих
 платах. Разделы ниже различают точные образы и область повторной проверки.
 Исторические сбои сохранены. Production/release qualification в цикл не входит.
+
+Этот отчёт относится только к образам этапа 9. Результаты обновления зависимостей
+от 2026-10-03: [DEPENDENCY_HIL_NICE.md](../2026-10-03/DEPENDENCY_HIL_NICE.md). Промежуточные
+`OPEN`, `pending` и указания `NEXT` в журнале ниже описывают состояние на момент
+записи; они не являются актуальным списком задач.
 
 ## Последняя оптимизация GET_INFO и итоговое решение
 
@@ -95,6 +100,9 @@ cached dependencies. Fixed-version into own-crate build6.030s/warm.114s gave
 identical frozen ELF (`09/final-into-build-time.json`); latest fast-info timing
 is recorded separately in `09/final-fast-info-build-time.json`.
 
+<details>
+<summary>Исторические кандидаты, сбои и журнал диагностики</summary>
+
 ## Предыдущий кандидат с возвратом OwnedFrame (история)
 
 | Проверка | nice!nano | XIAO |
@@ -145,7 +153,7 @@ deadline 60 с. XIAO ранее показала Mac tails 25–28 с. Публ�
 Advertising и лог BLE:ADVERTISING предшествуют завершению advertiser enable;
 по ним нельзя отделить настройку контроллера от ожидания подключения хоста.
 
-## Открытые сбои
+## Сбои, открытые на момент этой записи (история)
 
 1. XIAO Android: baseline+long1 получили ACK; long2 timeout 12 с, long3 не
    отправлен. GET_INFO новых клиентов также timeout, CDC heartbeat работает.
@@ -457,3 +465,5 @@ warm repeat0.117s, identical ELF SHA4c1bb556f80e659b0fd7348852ff6f3c6cf8b19e1d1f
 Dependencies were already cached; this is not a fresh dependency build and the
 single pair/changed cache state does not establish a speedup over stage7.
 Evidence09/final-build-time.json/log. Frozen signed candidate was not overwritten.
+
+</details>

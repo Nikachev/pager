@@ -1,21 +1,23 @@
 //! USB SCSI
 
-use crate::transport::Transport;
 use crate::CLASS_MASS_STORAGE;
+use crate::fmt::trace;
+use crate::transport::Transport;
+use core::fmt::Debug;
 use num_enum::TryFromPrimitive;
+use usb_device::UsbError;
 use usb_device::bus::InterfaceNumber;
 use usb_device::bus::UsbBus;
 use usb_device::class::{ControlIn, UsbClass};
 use usb_device::descriptor::DescriptorWriter;
+
 #[cfg(feature = "bbb")]
 use {
-    crate::fmt::debug,
     crate::subclass::Command,
-    crate::transport::bbb::{BulkOnly, BulkOnlyError},
     crate::transport::TransportError,
+    crate::transport::bbb::{BulkOnly, BulkOnlyError},
     core::borrow::BorrowMut,
     usb_device::bus::UsbBusAllocator,
-    usb_device::UsbError,
 };
 
 /// SCSI device subclass code
@@ -197,7 +199,7 @@ pub struct Scsi<T: Transport> {
 /// [Bulk Only Transport]: crate::transport::bbb::BulkOnly
 #[cfg(feature = "bbb")]
 impl<'alloc, Bus: UsbBus + 'alloc, Buf: BorrowMut<[u8]>> Scsi<BulkOnly<'alloc, Bus, Buf>> {
-    /// Creates a SCSI over Bulk Only Transport instance
+    /// Creates an SCSI over Bulk Only Transport instance
     ///
     /// # Arguments
     /// * `alloc` - [UsbBusAllocator]
@@ -211,7 +213,7 @@ impl<'alloc, Bus: UsbBus + 'alloc, Buf: BorrowMut<[u8]>> Scsi<BulkOnly<'alloc, B
     /// * [BufferTooSmall]
     ///
     /// # Panics
-    /// Panics if endpoint allocations fails.
+    /// Panics if endpoint allocation fails.
     ///
     /// [InvalidMaxLun]: crate::transport::bbb::BulkOnlyError::InvalidMaxLun
     /// [BufferTooSmall]: crate::transport::bbb::BulkOnlyError::BufferTooSmall
@@ -228,64 +230,32 @@ impl<'alloc, Bus: UsbBus + 'alloc, Buf: BorrowMut<[u8]>> Scsi<BulkOnly<'alloc, B
         })
     }
 
-    /// Drive subclass in both directions
-    ///
-    /// The passed closure may or may not be called after each time this function is called.
-    /// Moreover, it may me called multiple times, if subclass is unable to proceed further.
-    ///
-    /// # Arguments
-    /// * `callback` - closure, in which the SCSI command is processed
+    /// Drive BOT and handle the current Pager command once per poll.
     pub fn poll<F>(&mut self, mut callback: F) -> Result<(), UsbError>
     where
         F: FnMut(Command<ScsiCommand, Scsi<BulkOnly<'alloc, Bus, Buf>>>),
     {
-        fn map_ignore<T>(res: Result<T, TransportError<BulkOnlyError>>) -> Result<(), UsbError> {
+        fn map_ignore(res: Result<(), TransportError<BulkOnlyError>>) -> Result<(), UsbError> {
             match res {
-                Ok(_)
+                Ok(())
                 | Err(TransportError::Usb(UsbError::WouldBlock))
                 | Err(TransportError::Error(_)) => Ok(()),
                 Err(TransportError::Usb(err)) => Err(err),
             }
         }
-        // drive transport in both directions before user action
-        map_ignore(self.transport.read())?;
-        map_ignore(self.transport.write())?;
-
-        if let Some(raw_cb) = self.transport.get_command() {
-            // exec callback only if user action required
-            if !self.transport.has_status() {
-                let lun = raw_cb.lun;
-                let kind = parse_cb(raw_cb.bytes);
-
-                debug!("usb: scsi: Command: {}", kind);
-
-                loop {
-                    callback(Command {
-                        class: self,
-                        kind,
-                        lun,
-                    });
-
-                    // drive transport in both directions after user action.
-                    // exec callback if not enough data
-                    match self.transport.write() {
-                        Err(TransportError::Error(BulkOnlyError::FullPacketExpected)) => {
-                            continue;
-                        }
-                        Ok(_)
-                        | Err(TransportError::Error(_))
-                        | Err(TransportError::Usb(UsbError::WouldBlock)) => { /* ignore */ }
-                        Err(TransportError::Usb(err)) => {
-                            return Err(err);
-                        }
-                    };
-                    map_ignore(self.transport.read())?;
-
-                    break;
-                }
-            }
+        map_ignore(self.transport.poll())?;
+        if !self.transport.has_status()
+            && let Some(raw_cb) = self.transport.get_command()
+        {
+            let lun = raw_cb.lun;
+            let kind = parse_cb(raw_cb.bytes);
+            callback(Command {
+                class: self,
+                kind,
+                lun,
+            });
+            map_ignore(self.transport.poll())?;
         }
-
         Ok(())
     }
 }
@@ -312,6 +282,12 @@ where
 
     fn control_in(&mut self, xfer: ControlIn<Bus>) {
         self.transport.control_in(xfer)
+    }
+
+    fn poll(&mut self) {
+        if let Err(err) = self.transport.poll() {
+            trace!("usb: scsi: poll: {}", err);
+        }
     }
 }
 

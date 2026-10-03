@@ -33,4 +33,6 @@ settings afterward. It is opt-in, serial-bound and sends no HID. The local nRF
 USB driver patch requires this check in addition to framing/events and rendered
 HID on both boards; the vendor hash inventory alone is not hardware evidence.
 
-The final gate includes the caller-owned stream-buffer lifecycle tests and exhaustive digest formatting comparison for all byte values. Hardware evidence and exact image scope are in [FINAL_VALIDATION.md](../docs/FINAL_VALIDATION.md).
+The gate includes caller-owned stream-buffer lifecycle tests and exhaustive
+digest formatting comparison for all byte values. Record hardware evidence and
+exact image scope separately in `reports/<date>/`.

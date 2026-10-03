@@ -59,10 +59,15 @@ Manual acceptance includes actual rendered text on both hosts, repeated long
 After factory reset verify the exact fresh state, remove only that board's stale
 host entries and pair both slots again. Test cached advertising sets after bond
 clear→pairing without controller restart and renamed scan responses. Mac discovery
-alone does not establish Android discoverability.
+alone does not establish Android discoverability. A peer identity can occupy only
+one slot: pairing the prepared Android host in slot 3 moves its bond out of
+slot 2. To preserve both existing bonds, use a third host. With only Mac and
+Android available, record this move and restore Android by pairing it again in
+slot 2, clear the temporary slot and restore the original device name. Compare
+public settings afterward; a new pairing replaces the old encryption key.
 
 Record packages, public key fingerprint, serial, versions/hashes, raw timing
-samples, locale, rendered text and recovery outcomes in the implementation journal
+samples, locale, rendered text and recovery outcomes in dated reports
 and immutable checkpoints. Compare latency distributions and flash/static RAM
 against the same-chip baseline; small samples do not establish a speedup or tail
 regression. Static RAM budgets do not measure runtime stack peaks.
@@ -73,4 +78,6 @@ notification readiness remain required. Android acceptance is BLE pairing,
 reconnect and rendered input on the prepared devices. Android USB OTG, current
 measurement, production qualification and release CI are outside this cycle.
 
-For the completed development cycle and exact image scope (including the later GET_INFO-only patch), see [FINAL_VALIDATION.md](FINAL_VALIDATION.md). Rendered input flags always belong to their recorded image hashes; affected-path retesting does not relabel earlier manual reports.
+Store dated results in `reports/<date>/` and raw artifacts in immutable local
+checkpoints. Results belong to their exact recorded images; earlier manual
+checks do not qualify a changed build.
